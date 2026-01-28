@@ -108,7 +108,8 @@ run_discovery() {
     info "Starting EDOT Discovery Tool..."
     echo ""
     # uv run automatically installs dependencies from pyproject.toml
-    uv run edot-discover
+    # Use </dev/tty to ensure interactive prompts work when piped from curl
+    uv run edot-discover </dev/tty
 }
 
 main() {
