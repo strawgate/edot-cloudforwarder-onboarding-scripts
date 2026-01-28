@@ -8,7 +8,7 @@
 #
 # This script will:
 #   1. Clone the repository (or update if exists)
-#   2. Install dependencies using uv (preferred) or pip
+#   2. Install dependencies using uv
 #   3. Run the discovery tool
 #
 
@@ -49,20 +49,16 @@ check_requirements() {
         exit 1
     fi
 
-    # Check Python version
+    # Check Python version using Python itself (simplest and most reliable)
+    local python_version
     python_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    if [[ "$(echo "$python_version < 3.10" | bc -l 2>/dev/null || echo "0")" == "1" ]]; then
-        # bc might not be available, try Python comparison
-        if python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
-            :
-        else
-            error "Python 3.10+ is required, found Python $python_version"
-            exit 1
-        fi
+    if ! python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"; then
+        error "Python 3.10+ is required, found Python ${python_version}"
+        exit 1
     fi
 }
 
-# Install or update uv if possible
+# Install or update uv
 setup_uv() {
     if command -v uv &> /dev/null; then
         info "uv is already installed"
@@ -72,7 +68,10 @@ setup_uv() {
     # Try to install uv
     if command -v curl &> /dev/null; then
         info "Installing uv package manager..."
-        curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || true
+        if ! curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
+            error "Failed to install uv"
+            exit 1
+        fi
 
         # Source the updated PATH
         if [[ -f "${HOME}/.local/bin/uv" ]]; then
@@ -87,8 +86,8 @@ setup_uv() {
         fi
     fi
 
-    warn "Could not install uv, falling back to pip"
-    return 1
+    error "Could not install uv package manager"
+    exit 1
 }
 
 # Clone or update the repository
@@ -96,7 +95,14 @@ setup_repo() {
     if [[ -d "${INSTALL_DIR}/${REPO_NAME}" ]]; then
         info "Updating existing installation..."
         cd "${INSTALL_DIR}/${REPO_NAME}"
-        git pull --quiet origin main 2>/dev/null || git pull --quiet 2>/dev/null || true
+
+        # Try to pull updates, warn on failure but continue
+        if ! git pull --quiet origin main 2>/dev/null; then
+            if ! git pull --quiet 2>/dev/null; then
+                warn "Failed to update repository at ${INSTALL_DIR}/${REPO_NAME}"
+                warn "You may be running stale code. Consider deleting the directory and re-running."
+            fi
+        fi
     else
         info "Cloning repository..."
         mkdir -p "${INSTALL_DIR}"
@@ -110,37 +116,12 @@ setup_repo() {
 install_and_run() {
     cd "${INSTALL_DIR}/${REPO_NAME}"
 
-    if command -v uv &> /dev/null; then
-        info "Installing dependencies with uv..."
-        uv sync --quiet 2>/dev/null || uv pip install --quiet -r requirements.txt
+    info "Installing dependencies with uv..."
+    uv sync --quiet 2>/dev/null || uv pip install --quiet -r requirements.txt
 
-        info "Starting EDOT Discovery Tool..."
-        echo ""
-        uv run python discover.py
-    else
-        info "Installing dependencies with pip..."
-
-        # Check if we're in CloudShell (has --user requirement)
-        if [[ -n "${AWS_EXECUTION_ENV:-}" ]] || [[ -d "/home/cloudshell-user" ]]; then
-            pip install --user --quiet -r requirements.txt
-        else
-            # Try virtual environment first
-            if [[ ! -d ".venv" ]]; then
-                python3 -m venv .venv 2>/dev/null || true
-            fi
-
-            if [[ -f ".venv/bin/activate" ]]; then
-                source .venv/bin/activate
-                pip install --quiet -r requirements.txt
-            else
-                pip install --user --quiet -r requirements.txt
-            fi
-        fi
-
-        info "Starting EDOT Discovery Tool..."
-        echo ""
-        python3 discover.py
-    fi
+    info "Starting EDOT Discovery Tool..."
+    echo ""
+    uv run python discover.py
 }
 
 main() {
@@ -151,7 +132,7 @@ main() {
     echo ""
 
     check_requirements
-    setup_uv || true
+    setup_uv
     setup_repo
     install_and_run
 }

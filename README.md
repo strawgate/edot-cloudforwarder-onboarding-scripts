@@ -45,6 +45,17 @@ AWS CloudShell is the recommended environment - it has Python, pip, and pre-conf
 curl -fsSL https://raw.githubusercontent.com/elastic/edot-cloudforwarder-onboarding-scripts/main/install.sh | bash
 ```
 
+> **Security Note**: The `curl | bash` pattern executes remote code directly. Before running:
+>
+> 1. **Review the script first**: [View install.sh on GitHub](https://raw.githubusercontent.com/elastic/edot-cloudforwarder-onboarding-scripts/main/install.sh)
+> 2. **Or download and inspect locally**:
+>
+>    ```bash
+>    curl -fsSL https://raw.githubusercontent.com/elastic/edot-cloudforwarder-onboarding-scripts/main/install.sh -o install.sh
+>    cat install.sh  # Review the script
+>    bash install.sh  # Run after review
+>    ```
+
 Or manually:
 
 ```bash

@@ -128,8 +128,11 @@ class TestGenerateCloudformationCommand:
             api_key="test-key",
             region="us-east-1",
         )
-        # Find the parameter with log type
-        log_type_param = [p for p in result if "EdotCloudForwarderS3LogsType" in p][0]
+        # Find the parameter with log type using next() instead of list comprehension
+        log_type_param = next(
+            (p for p in result if "EdotCloudForwarderS3LogsType" in p), None
+        )
+        assert log_type_param is not None
         assert "vpcflow" in log_type_param
 
     def test_all_parameters_present(self):
@@ -190,6 +193,10 @@ class TestValidateOtlpEndpoint:
         """Test valid HTTPS endpoint."""
         assert validate_otlp_endpoint("https://example.apm.aws.cloud.es.io:443") is True
 
+    def test_valid_https_endpoint_simple(self):
+        """Test valid simple HTTPS endpoint."""
+        assert validate_otlp_endpoint("https://example.com") is True
+
     def test_rejects_http(self):
         """Test that HTTP endpoints are rejected."""
         assert validate_otlp_endpoint("http://example.com") is False
@@ -198,9 +205,21 @@ class TestValidateOtlpEndpoint:
         """Test that empty string is rejected."""
         assert validate_otlp_endpoint("") is False
 
-    def test_rejects_too_short(self):
-        """Test that very short URLs are rejected."""
-        assert validate_otlp_endpoint("https://a.co") is False
+    def test_rejects_none(self):
+        """Test that None is rejected without raising an exception."""
+        assert validate_otlp_endpoint(None) is False
+
+    def test_rejects_no_domain(self):
+        """Test that URLs without a proper domain are rejected."""
+        assert validate_otlp_endpoint("https://nodomain") is False
+
+    def test_accepts_localhost(self):
+        """Test that localhost is accepted as a valid host."""
+        assert validate_otlp_endpoint("https://localhost:8080") is True
+
+    def test_rejects_invalid_scheme(self):
+        """Test that non-HTTPS schemes are rejected."""
+        assert validate_otlp_endpoint("ftp://example.com") is False
 
 
 class TestLogTypeMap:

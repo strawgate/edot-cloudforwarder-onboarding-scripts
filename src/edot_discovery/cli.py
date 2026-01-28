@@ -19,6 +19,7 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import boto3
 import questionary
@@ -496,13 +497,37 @@ def execute_deployment(command: list[str]) -> tuple[bool, str]:
         return False, str(e)
 
 
-def validate_otlp_endpoint(endpoint: str) -> bool:
-    """Validate OTLP endpoint format."""
+def validate_otlp_endpoint(endpoint: str | None) -> bool:
+    """
+    Validate OTLP endpoint format.
+
+    Requirements:
+    - Must be a valid URL
+    - Must use HTTPS scheme
+    - Must have a non-empty host with at least one dot (domain) or be localhost
+    """
     if not endpoint:
         return False
-    if not endpoint.startswith("https://"):
+
+    try:
+        parsed = urlparse(endpoint)
+    except Exception:
         return False
-    return len(endpoint) > 15
+
+    # Must be HTTPS
+    if parsed.scheme != "https":
+        return False
+
+    # Must have a host
+    if not parsed.netloc:
+        return False
+
+    # Host must be a valid domain (contains dot) or localhost
+    host = parsed.netloc.split(":")[0]  # Remove port if present
+    if "." not in host and host != "localhost":
+        return False
+
+    return True
 
 
 def main():
@@ -635,7 +660,7 @@ def main():
 
     api_key = questionary.password(
         "Elastic API Key:",
-        validate=lambda x: len(x) > 10 or "API key appears too short",
+        validate=lambda x: len(x) >= 32 or "API key must be at least 32 characters",
     ).ask()
 
     if not api_key:
@@ -658,7 +683,7 @@ def main():
     )
     console.print()
 
-    for i, (display_name, bucket_arn, log_type, cmd) in enumerate(commands, 1):
+    for i, (display_name, bucket_arn, _log_type, cmd) in enumerate(commands, 1):
         console.print(f"[bold cyan]Stack {i}: {display_name}[/bold cyan]")
         console.print(f"[green]Bucket:[/green] {bucket_arn}")
         # Display redacted command
@@ -689,7 +714,7 @@ def main():
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        for display_name, bucket_arn, log_type, cmd in commands:
+        for display_name, bucket_arn, _log_type, cmd in commands:
             task = progress.add_task(f"Deploying {display_name}...", total=None)
             success, output = execute_deployment(cmd)
             progress.remove_task(task)
