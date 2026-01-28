@@ -19,7 +19,6 @@ EDOT Cloud Forwarder is Elastic's OpenTelemetry-native serverless log collector 
 
 ## Requirements
 
-- Python 3.10+
 - AWS credentials with the following permissions:
 
 ```json
@@ -38,67 +37,54 @@ EDOT Cloud Forwarder is Elastic's OpenTelemetry-native serverless log collector 
 
 ## Quick Start (AWS CloudShell)
 
-AWS CloudShell is the recommended environment - it has Python, pip, and pre-configured AWS credentials.
+AWS CloudShell is the recommended environment - it has git, curl, and pre-configured AWS credentials.
 
 ```bash
 # One-line install and run
-curl -fsSL https://raw.githubusercontent.com/elastic/edot-cloudforwarder-onboarding-scripts/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/strawgate/edot-cloudforwarder-onboarding-scripts/main/install.sh | bash
 ```
 
 > **Security Note**: The `curl | bash` pattern executes remote code directly. Before running:
 >
-> 1. **Review the script first**: [View install.sh on GitHub](https://raw.githubusercontent.com/elastic/edot-cloudforwarder-onboarding-scripts/main/install.sh)
+> 1. **Review the script first**: [View install.sh on GitHub](https://raw.githubusercontent.com/strawgate/edot-cloudforwarder-onboarding-scripts/main/install.sh)
 > 2. **Or download and inspect locally**:
 >
 >    ```bash
->    curl -fsSL https://raw.githubusercontent.com/elastic/edot-cloudforwarder-onboarding-scripts/main/install.sh -o install.sh
+>    curl -fsSL https://raw.githubusercontent.com/strawgate/edot-cloudforwarder-onboarding-scripts/main/install.sh -o install.sh
 >    cat install.sh  # Review the script
 >    bash install.sh  # Run after review
 >    ```
 
-Or manually:
+## Quick Start (Local with uv)
+
+The project uses [uv](https://github.com/astral-sh/uv) for dependency management. Install uv first:
 
 ```bash
-# Clone the repository
-git clone https://github.com/elastic/edot-cloudforwarder-onboarding-scripts.git
-cd edot-cloudforwarder-onboarding-scripts
-
-# Install dependencies (persists in CloudShell's $HOME)
-pip install --user -r requirements.txt
-
-# Run the discovery tool
-python discover.py
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-## Quick Start (Local)
+Then run the discovery tool:
 
 ```bash
 # Clone the repository
-git clone https://github.com/elastic/edot-cloudforwarder-onboarding-scripts.git
+git clone https://github.com/strawgate/edot-cloudforwarder-onboarding-scripts.git
 cd edot-cloudforwarder-onboarding-scripts
 
-# Create a virtual environment (optional but recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure AWS credentials
+# Configure AWS credentials (if not already done)
 aws configure
 
-# Run the discovery tool
-python discover.py
+# Run the discovery tool (uv automatically handles dependencies)
+uv run edot-discover
 ```
 
 ## Usage
 
 ### Interactive Mode
 
-Simply run the script and follow the prompts:
+Simply run the tool and follow the prompts:
 
 ```bash
-python discover.py
+uv run edot-discover
 ```
 
 The tool will:

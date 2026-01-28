@@ -43,10 +43,10 @@ dev = [
 edot-discover = "edot_discovery.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/elastic/edot-cloudforwarder-onboarding-scripts"
+Homepage = "https://github.com/strawgate/edot-cloudforwarder-onboarding-scripts"
 Documentation = "https://www.elastic.co/guide/en/observability/current/edot-cloud-forwarder.html"
-Repository = "https://github.com/elastic/edot-cloudforwarder-onboarding-scripts"
-Issues = "https://github.com/elastic/edot-cloudforwarder-onboarding-scripts/issues"
+Repository = "https://github.com/strawgate/edot-cloudforwarder-onboarding-scripts"
+Issues = "https://github.com/strawgate/edot-cloudforwarder-onboarding-scripts/issues"
 
 [build-system]
 requires = ["hatchling"]

@@ -7,8 +7,7 @@ that are writing to S3 buckets, and generates CloudFormation deployment commands
 for the EDOT Cloud Forwarder.
 
 Usage:
-    pip install --user questionary rich boto3
-    python discover.py
+    uv run edot-discover
 
 Designed to run in AWS CloudShell with pre-configured credentials.
 """

@@ -4,53 +4,36 @@ This guide covers setting up a development environment and working on the EDOT D
 
 ## Prerequisites
 
-- Python 3.10 or higher
 - Git
 - AWS credentials (for integration testing)
 
-## Quick Setup with uv (Recommended)
+## Quick Setup with uv
 
-[uv](https://github.com/astral-sh/uv) is a fast Python package manager. Install it first:
+This project uses [uv](https://github.com/astral-sh/uv) for dependency management. Install it first:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Then set up the project:
+Then clone and run:
 
 ```bash
 # Clone the repository
-git clone https://github.com/elastic/edot-cloudforwarder-onboarding-scripts.git
+git clone https://github.com/strawgate/edot-cloudforwarder-onboarding-scripts.git
 cd edot-cloudforwarder-onboarding-scripts
 
-# Create virtual environment and install dependencies
-uv sync
-
-# Run the tool
-uv run python discover.py
-
-# Or use the installed command
+# Run the tool (uv automatically handles venv and dependencies)
 uv run edot-discover
 ```
 
-## Setup with pip
-
-If you prefer traditional pip:
+For development with dev dependencies:
 
 ```bash
-# Clone the repository
-git clone https://github.com/elastic/edot-cloudforwarder-onboarding-scripts.git
-cd edot-cloudforwarder-onboarding-scripts
-
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install in editable mode with dev dependencies
-pip install -e ".[dev]"
+# Install dev dependencies explicitly (for IDE support)
+uv sync --dev
 
 # Run the tool
-python discover.py
+uv run edot-discover
 ```
 
 ## Project Structure
@@ -65,10 +48,8 @@ edot-cloudforwarder-onboarding-scripts/
 │   ├── __init__.py
 │   ├── conftest.py          # Pytest fixtures
 │   └── test_cli.py          # CLI tests
-├── discover.py              # Entry point for direct execution
 ├── install.sh               # One-line installer
-├── pyproject.toml           # Project configuration
-├── requirements.txt         # Pip requirements (for CloudShell)
+├── pyproject.toml           # Project configuration (dependencies, metadata)
 ├── README.md
 ├── CONTRIBUTING.md
 ├── CODE_STYLE.md
@@ -153,7 +134,7 @@ For integration testing with real AWS resources:
 2. Run the tool manually:
 
    ```bash
-   uv run python discover.py
+   uv run edot-discover
    ```
 
 3. The tool will discover real resources in your account
@@ -240,10 +221,9 @@ uv run pytest -s tests/test_cli.py::test_name
 
 | Command | Description |
 |---------|-------------|
-| `uv sync` | Install/update dependencies |
+| `uv run edot-discover` | Run the discovery tool |
 | `uv run pytest` | Run tests |
 | `uv run ruff check .` | Lint code |
 | `uv run ruff format .` | Format code |
 | `uv run mypy src` | Type check |
-| `uv run python discover.py` | Run the tool |
-| `uv run edot-discover` | Run via installed command |
+| `uv sync --dev` | Explicitly sync dev dependencies (for IDE support) |

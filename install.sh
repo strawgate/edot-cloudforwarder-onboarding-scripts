@@ -4,18 +4,18 @@
 # One-line installer for AWS CloudShell and local environments
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/elastic/edot-cloudforwarder-onboarding-scripts/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/strawgate/edot-cloudforwarder-onboarding-scripts/main/install.sh | bash
 #
 # This script will:
-#   1. Clone the repository (or update if exists)
-#   2. Install dependencies using uv
-#   3. Run the discovery tool
+#   1. Install uv (if not present)
+#   2. Clone the repository (or update if exists)
+#   3. Run the discovery tool via uv run (auto-installs dependencies)
 #
 
 set -euo pipefail
 
 # Configuration
-REPO_URL="https://github.com/elastic/edot-cloudforwarder-onboarding-scripts.git"
+REPO_URL="https://github.com/strawgate/edot-cloudforwarder-onboarding-scripts.git"
 INSTALL_DIR="${HOME}/.edot-discovery"
 REPO_NAME="edot-cloudforwarder-onboarding-scripts"
 
@@ -44,16 +44,8 @@ check_requirements() {
         exit 1
     fi
 
-    if ! command -v python3 &> /dev/null; then
-        error "python3 is required but not installed"
-        exit 1
-    fi
-
-    # Check Python version using Python itself (simplest and most reliable)
-    local python_version
-    python_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    if ! python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"; then
-        error "Python 3.10+ is required, found Python ${python_version}"
+    if ! command -v curl &> /dev/null; then
+        error "curl is required but not installed"
         exit 1
     fi
 }
@@ -65,25 +57,22 @@ setup_uv() {
         return 0
     fi
 
-    # Try to install uv
-    if command -v curl &> /dev/null; then
-        info "Installing uv package manager..."
-        if ! curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
-            error "Failed to install uv"
-            exit 1
-        fi
+    info "Installing uv package manager..."
+    if ! curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
+        error "Failed to install uv"
+        exit 1
+    fi
 
-        # Source the updated PATH
-        if [[ -f "${HOME}/.local/bin/uv" ]]; then
-            export PATH="${HOME}/.local/bin:${PATH}"
-        elif [[ -f "${HOME}/.cargo/bin/uv" ]]; then
-            export PATH="${HOME}/.cargo/bin:${PATH}"
-        fi
+    # Source the updated PATH
+    if [[ -f "${HOME}/.local/bin/uv" ]]; then
+        export PATH="${HOME}/.local/bin:${PATH}"
+    elif [[ -f "${HOME}/.cargo/bin/uv" ]]; then
+        export PATH="${HOME}/.cargo/bin:${PATH}"
+    fi
 
-        if command -v uv &> /dev/null; then
-            info "uv installed successfully"
-            return 0
-        fi
+    if command -v uv &> /dev/null; then
+        info "uv installed successfully"
+        return 0
     fi
 
     error "Could not install uv package manager"
@@ -112,16 +101,14 @@ setup_repo() {
     fi
 }
 
-# Install dependencies and run
-install_and_run() {
+# Run the discovery tool
+run_discovery() {
     cd "${INSTALL_DIR}/${REPO_NAME}"
-
-    info "Installing dependencies with uv..."
-    uv sync --quiet 2>/dev/null || uv pip install --quiet -r requirements.txt
 
     info "Starting EDOT Discovery Tool..."
     echo ""
-    uv run python discover.py
+    # uv run automatically installs dependencies from pyproject.toml
+    uv run edot-discover
 }
 
 main() {
@@ -134,7 +121,7 @@ main() {
     check_requirements
     setup_uv
     setup_repo
-    install_and_run
+    run_discovery
 }
 
 main "$@"
