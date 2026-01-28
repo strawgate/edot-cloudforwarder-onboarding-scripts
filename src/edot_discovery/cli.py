@@ -543,7 +543,7 @@ def generate_cloudformation_command(
         f"ParameterKey=OTLPEndpoint,ParameterValue={otlp_endpoint}",
         f"ParameterKey=ElasticAPIKey,ParameterValue={api_key}",
         f"ParameterKey=EdotCloudForwarderS3LogsType,ParameterValue={cf_log_type}",
-        f"ParameterKey=S3BucketARN,ParameterValue={bucket_arn}",
+        f"ParameterKey=SourceS3BucketARN,ParameterValue={bucket_arn}",
     ]
 
 
