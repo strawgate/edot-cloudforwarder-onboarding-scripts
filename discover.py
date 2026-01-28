@@ -55,6 +55,35 @@ def get_default_region() -> str:
     return session.region_name or "us-east-1"
 
 
+def get_enabled_regions(default_region: str) -> list[str]:
+    """
+    Get list of enabled AWS regions for the account.
+
+    Returns regions sorted with default_region first, then alphabetically.
+    """
+    try:
+        ec2 = boto3.client("ec2", region_name=default_region)
+        response = ec2.describe_regions(
+            Filters=[{"Name": "opt-in-status", "Values": ["opt-in-not-required", "opted-in"]}]
+        )
+        regions = [r["RegionName"] for r in response.get("Regions", [])]
+
+        # Sort alphabetically, but put default region first
+        regions.sort()
+        if default_region in regions:
+            regions.remove(default_region)
+            regions.insert(0, default_region)
+
+        return regions
+    except ClientError as e:
+        console.print(f"[yellow]Warning: Could not list regions: {e}[/yellow]")
+        # Fallback to common regions
+        return [default_region]
+    except Exception as e:
+        console.print(f"[yellow]Warning: Error listing regions: {e}[/yellow]")
+        return [default_region]
+
+
 def extract_bucket_arn(destination: str) -> str:
     """Extract the bucket ARN from a full S3 destination."""
     # Handle ARN format: arn:aws:s3:::bucket-name/prefix/
@@ -396,12 +425,29 @@ def main():
 
     console.print()
 
-    # Select region
+    # Get enabled regions and select
     default_region = get_default_region()
-    region = questionary.text(
-        "AWS Region to scan:",
-        default=default_region,
-        validate=lambda x: len(x) > 0 or "Region cannot be empty",
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        progress.add_task("Fetching enabled regions...", total=None)
+        regions = get_enabled_regions(default_region)
+
+    # Build region choices with current region marked
+    region_choices = []
+    for r in regions:
+        if r == default_region:
+            region_choices.append(Choice(title=f"{r} (current)", value=r))
+        else:
+            region_choices.append(Choice(title=r, value=r))
+
+    region = questionary.select(
+        "Select AWS region to scan:",
+        choices=region_choices,
     ).ask()
 
     if not region:
