@@ -6,7 +6,7 @@ An interactive CLI tool that discovers AWS log sources and generates CloudFormat
 
 EDOT Cloud Forwarder is Elastic's OpenTelemetry-native serverless log collector deployed as an AWS Lambda function. This tool helps you:
 
-1. **Discover** VPC Flow Logs and ELB Access Logs writing to S3 buckets
+1. **Discover** VPC Flow Logs, ELB Access Logs, CloudTrail trails, and AWS WAF logs writing to S3 buckets
 2. **Select** which log sources to onboard via an interactive multi-select interface
 3. **Generate** CloudFormation deployment commands for EDOT Cloud Forwarder
 
@@ -16,6 +16,8 @@ EDOT Cloud Forwarder is Elastic's OpenTelemetry-native serverless log collector 
 |----------|--------|-------------|
 | VPC Flow Logs | VPCs, Subnets, ENIs | S3 Bucket |
 | ELB Access Logs | ALB, NLB, Classic ELB | S3 Bucket |
+| CloudTrail | Trails (single/multi-region/organization) | S3 Bucket |
+| AWS WAF | Web ACLs (Regional and CloudFront) | S3 Bucket |
 
 ## Requirements
 
@@ -29,6 +31,9 @@ EDOT Cloud Forwarder is Elastic's OpenTelemetry-native serverless log collector 
     "ec2:DescribeRegions",
     "elasticloadbalancing:DescribeLoadBalancers",
     "elasticloadbalancing:DescribeLoadBalancerAttributes",
+    "cloudtrail:DescribeTrails",
+    "wafv2:ListWebACLs",
+    "wafv2:GetLoggingConfiguration",
     "sts:GetCallerIdentity"
   ],
   "Resource": "*"
@@ -91,7 +96,7 @@ The tool will:
 
 1. Verify your AWS credentials and display your account info
 2. Present a region picker with all enabled regions
-3. Discover all VPC Flow Logs and ELB Access Logs writing to S3
+3. Discover all VPC Flow Logs, ELB Access Logs, CloudTrail trails, and WAF logs writing to S3
 4. Display results in a formatted table
 5. Present a multi-select interface (all sources pre-selected)
 6. Ask for your Elastic Cloud OTLP endpoint and API key
@@ -172,9 +177,9 @@ Also available via AWS Serverless Application Repository as `edot-cloud-forwarde
 
 ### No sources found
 
-- Verify you have VPC Flow Logs or ELB Access Logs configured to write to S3
+- Verify you have VPC Flow Logs, ELB Access Logs, CloudTrail trails, or WAF logs configured to write to S3
 - Check you're scanning the correct region
-- Ensure your IAM permissions include `ec2:DescribeFlowLogs` and `elasticloadbalancing:Describe*`
+- Ensure your IAM permissions include `ec2:DescribeFlowLogs`, `elasticloadbalancing:Describe*`, `cloudtrail:DescribeTrails`, and `wafv2:*`
 
 ### Permission denied errors
 
@@ -184,6 +189,9 @@ Your AWS credentials need the following permissions:
 - `ec2:DescribeRegions`
 - `elasticloadbalancing:DescribeLoadBalancers`
 - `elasticloadbalancing:DescribeLoadBalancerAttributes`
+- `cloudtrail:DescribeTrails`
+- `wafv2:ListWebACLs`
+- `wafv2:GetLoggingConfiguration`
 - `sts:GetCallerIdentity`
 
 ### CloudFormation deployment fails

@@ -1,7 +1,5 @@
 """Tests for the CLI module."""
 
-import pytest
-
 from edot_discovery.cli import (
     LOG_TYPE_MAP,
     extract_bucket_arn,
@@ -129,9 +127,7 @@ class TestGenerateCloudformationCommand:
             region="us-east-1",
         )
         # Find the parameter with log type using next() instead of list comprehension
-        log_type_param = next(
-            (p for p in result if "EdotCloudForwarderS3LogsType" in p), None
-        )
+        log_type_param = next((p for p in result if "EdotCloudForwarderS3LogsType" in p), None)
         assert log_type_param is not None
         assert "vpcflow" in log_type_param
 
@@ -160,7 +156,9 @@ class TestRedactCommandForDisplay:
     def test_redacts_elastic_api_key(self):
         """Test that ElasticAPIKey parameter is redacted."""
         cmd = [
-            "aws", "cloudformation", "create-stack",
+            "aws",
+            "cloudformation",
+            "create-stack",
             "ParameterKey=ElasticAPIKey,ParameterValue=secret-key-123",
         ]
         result = redact_command_for_display(cmd)
@@ -177,9 +175,13 @@ class TestRedactCommandForDisplay:
     def test_preserves_non_sensitive_values(self):
         """Test that non-sensitive values are preserved."""
         cmd = [
-            "aws", "cloudformation", "create-stack",
-            "--stack-name", "my-stack",
-            "--region", "us-east-1",
+            "aws",
+            "cloudformation",
+            "create-stack",
+            "--stack-name",
+            "my-stack",
+            "--region",
+            "us-east-1",
         ]
         result = redact_command_for_display(cmd)
         assert "my-stack" in result

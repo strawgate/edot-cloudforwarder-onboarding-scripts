@@ -2,9 +2,9 @@
 """
 EDOT Cloud Forwarder - AWS Log Source Discovery & Onboarding Tool
 
-This interactive tool discovers AWS log sources (VPC Flow Logs and ELB Access Logs)
-that are writing to S3 buckets, and generates CloudFormation deployment commands
-for the EDOT Cloud Forwarder.
+This interactive tool discovers AWS log sources (VPC Flow Logs, ELB Access Logs,
+CloudTrail, and AWS WAF) that are writing to S3 buckets, and generates CloudFormation
+deployment commands for the EDOT Cloud Forwarder.
 
 Usage:
     uv run edot-discover
@@ -34,15 +34,14 @@ from rich.table import Table
 console = Console()
 
 # CloudFormation template URL
-CLOUDFORMATION_TEMPLATE_URL = (
-    "https://edot-cloud-forwarder.s3.amazonaws.com/v0/latest/cloudformation/s3_logs-cloudformation.yaml"
-)
+CLOUDFORMATION_TEMPLATE_URL = "https://edot-cloud-forwarder.s3.amazonaws.com/v0/latest/cloudformation/s3_logs-cloudformation.yaml"
 
 # Map internal log_type to CloudFormation EdotCloudForwarderS3LogsType values
 LOG_TYPE_MAP = {
     "vpc_flow_logs": "vpcflow",
     "elb_access_logs": "elbaccess",
     "cloudtrail": "cloudtrail",
+    "waf": "waf",
 }
 
 
@@ -50,10 +49,10 @@ LOG_TYPE_MAP = {
 class LogSource:
     """Represents a discovered log source."""
 
-    log_type: str  # 'vpc_flow_logs' or 'elb_access_logs'
+    log_type: str  # 'vpc_flow_logs', 'elb_access_logs', 'cloudtrail', or 'waf'
     display_type: str  # Human-readable type
-    source_id: str  # Flow log ID or LB name
-    resource_id: str  # VPC/Subnet/ENI ID or LB ARN
+    source_id: str  # Flow log ID, LB name, Trail name, or Web ACL name
+    resource_id: str  # VPC/Subnet/ENI ID, LB ARN, Trail ARN, or Web ACL ARN
     destination: str  # Full S3 destination path
     bucket_arn: str  # S3 bucket ARN (without path)
     region: str  # AWS region
@@ -74,9 +73,7 @@ def get_enabled_regions(default_region: str) -> list[str]:
     try:
         ec2 = boto3.client("ec2", region_name=default_region)
         response = ec2.describe_regions(
-            Filters=[
-                {"Name": "opt-in-status", "Values": ["opt-in-not-required", "opted-in"]}
-            ]
+            Filters=[{"Name": "opt-in-status", "Values": ["opt-in-not-required", "opted-in"]}]
         )
         regions = [r["RegionName"] for r in response.get("Regions", [])]
 
@@ -120,10 +117,7 @@ def discover_flow_logs(session: boto3.Session, region: str) -> list[LogSource]:
         for page in paginator.paginate():
             for fl in page.get("FlowLogs", []):
                 # Only include active flow logs writing to S3
-                if (
-                    fl.get("LogDestinationType") == "s3"
-                    and fl.get("FlowLogStatus") == "ACTIVE"
-                ):
+                if fl.get("LogDestinationType") == "s3" and fl.get("FlowLogStatus") == "ACTIVE":
                     destination = fl.get("LogDestination", "")
                     sources.append(
                         LogSource(
@@ -159,10 +153,7 @@ def discover_elb_logs(session: boto3.Session, region: str) -> list[LogSource]:
                     attrs_response = elbv2.describe_load_balancer_attributes(
                         LoadBalancerArn=lb["LoadBalancerArn"]
                     )
-                    config = {
-                        a["Key"]: a["Value"]
-                        for a in attrs_response.get("Attributes", [])
-                    }
+                    config = {a["Key"]: a["Value"] for a in attrs_response.get("Attributes", [])}
 
                     if config.get("access_logs.s3.enabled") == "true":
                         bucket = config.get("access_logs.s3.bucket", "")
@@ -171,7 +162,8 @@ def discover_elb_logs(session: boto3.Session, region: str) -> list[LogSource]:
                         if not bucket:
                             console.print(
                                 f"[yellow]Warning: {lb['LoadBalancerName']} in {region} "
-                                f"has access logging enabled but no S3 bucket configured, skipping[/yellow]"
+                                "has access logging enabled but no S3 bucket "
+                                "configured, skipping[/yellow]"
                             )
                             continue
 
@@ -192,7 +184,8 @@ def discover_elb_logs(session: boto3.Session, region: str) -> list[LogSource]:
                         )
                 except ClientError as e:
                     console.print(
-                        f"[yellow]Warning: Could not get attributes for {lb['LoadBalancerName']}: {e}[/yellow]"
+                        f"[yellow]Warning: Could not get attributes for "
+                        f"{lb['LoadBalancerName']}: {e}[/yellow]"
                     )
     except ClientError as e:
         console.print(f"[yellow]Warning: Could not describe ALB/NLB: {e}[/yellow]")
@@ -220,8 +213,9 @@ def discover_elb_logs(session: boto3.Session, region: str) -> list[LogSource]:
                         # Skip if bucket is empty
                         if not bucket:
                             console.print(
-                                f"[yellow]Warning: Classic ELB {lb['LoadBalancerName']} in {region} "
-                                f"has access logging enabled but no S3 bucket configured, skipping[/yellow]"
+                                f"[yellow]Warning: Classic ELB {lb['LoadBalancerName']} "
+                                f"in {region} has access logging enabled but no S3 "
+                                "bucket configured, skipping[/yellow]"
                             )
                             continue
 
@@ -241,18 +235,143 @@ def discover_elb_logs(session: boto3.Session, region: str) -> list[LogSource]:
                         )
                 except ClientError as e:
                     console.print(
-                        f"[yellow]Warning: Could not get attributes for Classic ELB {lb['LoadBalancerName']}: {e}[/yellow]"
+                        f"[yellow]Warning: Could not get attributes for Classic ELB "
+                        f"{lb['LoadBalancerName']}: {e}[/yellow]"
                     )
     except ClientError as e:
         # Classic ELB API may not be available in all regions
         if "is not supported in this region" not in str(e):
-            console.print(
-                f"[yellow]Warning: Could not describe Classic ELB: {e}[/yellow]"
-            )
+            console.print(f"[yellow]Warning: Could not describe Classic ELB: {e}[/yellow]")
     except Exception as e:
-        console.print(
-            f"[yellow]Warning: Error discovering Classic ELB logs: {e}[/yellow]"
-        )
+        console.print(f"[yellow]Warning: Error discovering Classic ELB logs: {e}[/yellow]")
+
+    return sources
+
+
+def discover_cloudtrail(session: boto3.Session, region: str) -> list[LogSource]:
+    """Discover CloudTrail trails writing to S3."""
+    sources = []
+    try:
+        cloudtrail = session.client("cloudtrail", region_name=region)
+
+        # Get all trails (including organization trails)
+        response = cloudtrail.describe_trails(includeShadowTrails=False)
+
+        for trail in response.get("trailList", []):
+            # Only include trails that have S3 bucket configured
+            bucket_name = trail.get("S3BucketName")
+            if not bucket_name:
+                continue
+
+            # Check if this trail's home region matches our scan region
+            # (trails can be multi-region but have a home region)
+            trail_home_region = trail.get("HomeRegion", region)
+            if trail_home_region != region:
+                continue
+
+            trail_name = trail.get("Name", "unknown")
+            trail_arn = trail.get("TrailARN", "")
+            s3_prefix = trail.get("S3KeyPrefix", "")
+
+            # Build destination path
+            if s3_prefix:
+                destination = f"s3://{bucket_name}/{s3_prefix}"
+            else:
+                destination = f"s3://{bucket_name}"
+
+            # Determine trail type for display
+            is_org_trail = trail.get("IsOrganizationTrail", False)
+            is_multi_region = trail.get("IsMultiRegionTrail", False)
+
+            display_parts = ["CloudTrail"]
+            if is_org_trail:
+                display_parts.append("(Organization)")
+            elif is_multi_region:
+                display_parts.append("(Multi-Region)")
+
+            sources.append(
+                LogSource(
+                    log_type="cloudtrail",
+                    display_type=" ".join(display_parts),
+                    source_id=trail_name,
+                    resource_id=trail_arn,
+                    destination=destination,
+                    bucket_arn=f"arn:aws:s3:::{bucket_name}",
+                    region=region,
+                )
+            )
+    except ClientError as e:
+        console.print(f"[yellow]Warning: Could not describe CloudTrail trails: {e}[/yellow]")
+    except Exception as e:
+        console.print(f"[yellow]Warning: Error discovering CloudTrail: {e}[/yellow]")
+
+    return sources
+
+
+def discover_waf_logs(session: boto3.Session, region: str) -> list[LogSource]:
+    """Discover AWS WAF Web ACLs with logging to S3."""
+    sources = []
+
+    # WAFv2 has two scopes: REGIONAL and CLOUDFRONT
+    # CLOUDFRONT scope is only available in us-east-1
+    scopes = ["REGIONAL"]
+    if region == "us-east-1":
+        scopes.append("CLOUDFRONT")
+
+    # Create wafv2 client once outside the loop
+    wafv2 = session.client("wafv2", region_name=region)
+
+    for scope in scopes:
+        try:
+            # List all Web ACLs for this scope
+            paginator = wafv2.get_paginator("list_web_acls")
+            for page in paginator.paginate(Scope=scope):
+                for acl in page.get("WebACLs", []):
+                    acl_arn = acl.get("ARN", "")
+                    acl_name = acl.get("Name", "unknown")
+
+                    try:
+                        # Get logging configuration for this Web ACL
+                        logging_config = wafv2.get_logging_configuration(ResourceArn=acl_arn)
+
+                        log_destinations = logging_config.get("LoggingConfiguration", {}).get(
+                            "LogDestinationConfigs", []
+                        )
+
+                        for dest_arn in log_destinations:
+                            # Only include S3 destinations
+                            # S3 ARN format: arn:aws:s3:::bucket-name
+                            if dest_arn.startswith("arn:aws:s3:::"):
+                                bucket_name = dest_arn.replace("arn:aws:s3:::", "")
+
+                                # Determine display type based on scope
+                                if scope == "CLOUDFRONT":
+                                    display_type = "WAF (CloudFront)"
+                                else:
+                                    display_type = "WAF (Regional)"
+
+                                sources.append(
+                                    LogSource(
+                                        log_type="waf",
+                                        display_type=display_type,
+                                        source_id=acl_name,
+                                        resource_id=acl_arn,
+                                        destination=f"s3://{bucket_name}",
+                                        bucket_arn=dest_arn,
+                                        region=region,
+                                    )
+                                )
+                    except ClientError as e:
+                        # WAFNonexistentItemException means no logging configured
+                        if "WAFNonexistentItemException" not in str(e):
+                            console.print(
+                                f"[yellow]Warning: Could not get logging config "
+                                f"for {acl_name}: {e}[/yellow]"
+                            )
+        except ClientError as e:
+            console.print(f"[yellow]Warning: Could not list WAF Web ACLs ({scope}): {e}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Error discovering WAF logs ({scope}): {e}[/yellow]")
 
     return sources
 
@@ -275,6 +394,12 @@ def discover_all_sources(region: str) -> list[LogSource]:
 
         progress.update(task, description="Scanning ELB Access Logs...")
         all_sources.extend(discover_elb_logs(session, region))
+
+        progress.update(task, description="Scanning CloudTrail trails...")
+        all_sources.extend(discover_cloudtrail(session, region))
+
+        progress.update(task, description="Scanning WAF Web ACLs...")
+        all_sources.extend(discover_waf_logs(session, region))
 
     return all_sources
 
@@ -309,6 +434,8 @@ def build_selection_choices(sources: list[LogSource]) -> list:
     # Group by log type
     flow_logs = [s for s in sources if s.log_type == "vpc_flow_logs"]
     elb_logs = [s for s in sources if s.log_type == "elb_access_logs"]
+    cloudtrail_logs = [s for s in sources if s.log_type == "cloudtrail"]
+    waf_logs = [s for s in sources if s.log_type == "waf"]
 
     if flow_logs:
         choices.append(Separator("--- VPC Flow Logs ---"))
@@ -322,6 +449,22 @@ def build_selection_choices(sources: list[LogSource]) -> list:
     if elb_logs:
         choices.append(Separator("--- ELB Access Logs ---"))
         for source in elb_logs:
+            label = f"{source.source_id} ({source.display_type}) -> {source.bucket_arn}"
+            if len(label) > 80:
+                label = label[:77] + "..."
+            choices.append(Choice(title=label, value=source, checked=True))
+
+    if cloudtrail_logs:
+        choices.append(Separator("--- CloudTrail ---"))
+        for source in cloudtrail_logs:
+            label = f"{source.source_id} ({source.display_type}) -> {source.bucket_arn}"
+            if len(label) > 80:
+                label = label[:77] + "..."
+            choices.append(Choice(title=label, value=source, checked=True))
+
+    if waf_logs:
+        choices.append(Separator("--- AWS WAF ---"))
+        for source in waf_logs:
             label = f"{source.source_id} ({source.display_type}) -> {source.bucket_arn}"
             if len(label) > 80:
                 label = label[:77] + "..."
@@ -416,9 +559,7 @@ def redact_command_for_display(cmd: list[str]) -> str:
     for part in cmd:
         # Redact ElasticAPIKey parameter
         if part.startswith("ParameterKey=ElasticAPIKey,ParameterValue="):
-            redacted_parts.append(
-                "ParameterKey=ElasticAPIKey,ParameterValue=<REDACTED>"
-            )
+            redacted_parts.append("ParameterKey=ElasticAPIKey,ParameterValue=<REDACTED>")
         # Redact common API key patterns
         elif re.match(r"^(API_KEY|APIKEY|api_key|apikey)=", part):
             key_name = part.split("=")[0]
@@ -459,6 +600,10 @@ def generate_deployment_commands(
         # Set display name based on log type
         if log_type == "vpc_flow_logs":
             display_name = "VPC Flow Logs"
+        elif log_type == "cloudtrail":
+            display_name = "CloudTrail"
+        elif log_type == "waf":
+            display_name = "AWS WAF"
         else:
             display_name = "ELB Access Logs"
 
@@ -601,10 +746,14 @@ def main():
                 "[yellow]No S3-backed log sources found in this region.[/yellow]\n\n"
                 "EDOT Cloud Forwarder currently supports:\n"
                 "  - VPC Flow Logs writing to S3\n"
-                "  - ELB/ALB/NLB Access Logs writing to S3\n\n"
+                "  - ELB/ALB/NLB Access Logs writing to S3\n"
+                "  - CloudTrail trails writing to S3\n"
+                "  - AWS WAF logs writing to S3\n\n"
                 "To set up logging:\n"
                 "  - VPC Flow Logs: VPC Console -> Flow Logs -> Create\n"
-                "  - ELB Access Logs: EC2 Console -> Load Balancers -> Attributes",
+                "  - ELB Access Logs: EC2 Console -> Load Balancers -> Attributes\n"
+                "  - CloudTrail: CloudTrail Console -> Trails -> Create trail\n"
+                "  - AWS WAF: WAF Console -> Web ACLs -> Logging",
                 title="No Sources Found",
                 border_style="yellow",
             )
@@ -649,8 +798,7 @@ def main():
 
     otlp_endpoint = questionary.text(
         "OTLP Endpoint URL (https://...):",
-        validate=lambda x: validate_otlp_endpoint(x)
-        or "Enter a valid HTTPS endpoint URL",
+        validate=lambda x: validate_otlp_endpoint(x) or "Enter a valid HTTPS endpoint URL",
     ).ask()
 
     if not otlp_endpoint:
@@ -723,9 +871,7 @@ def main():
                     f"[green]Stack creation initiated for {display_name} ({bucket_arn})[/green]"
                 )
             else:
-                console.print(
-                    f"[red]Failed to create stack for {display_name}: {output}[/red]"
-                )
+                console.print(f"[red]Failed to create stack for {display_name}: {output}[/red]")
 
             results.append((display_name, bucket_arn, success, output))
 
@@ -740,7 +886,8 @@ def main():
             Panel(
                 f"[green]All {successful} stack(s) initiated successfully![/green]\n\n"
                 "Monitor stack creation progress:\n"
-                f"  aws cloudformation list-stacks --region {region} --stack-status-filter CREATE_IN_PROGRESS CREATE_COMPLETE\n\n"
+                f"  aws cloudformation list-stacks --region {region} "
+                "--stack-status-filter CREATE_IN_PROGRESS CREATE_COMPLETE\n\n"
                 "View stack events:\n"
                 "  aws cloudformation describe-stack-events --stack-name <stack-name>",
                 title="Deployment Complete",

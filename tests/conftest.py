@@ -43,7 +43,7 @@ def sample_elb_attributes_no_bucket():
 def sample_load_balancer():
     """Sample ALB description."""
     return {
-        "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/abc123",
+        "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/abc123",  # noqa: E501
         "LoadBalancerName": "my-alb",
         "Type": "application",
     }
