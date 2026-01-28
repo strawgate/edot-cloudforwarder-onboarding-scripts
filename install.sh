@@ -52,27 +52,20 @@ check_requirements() {
 
 # Install or update uv
 setup_uv() {
+    # Add common uv install locations to PATH
+    export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+
     if command -v uv &> /dev/null; then
         info "uv is already installed"
         return 0
     fi
 
     info "Installing uv package manager..."
-    if ! curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
-        error "Failed to install uv"
-        exit 1
-    fi
-
-    # Source the updated PATH
-    if [[ -f "${HOME}/.local/bin/uv" ]]; then
-        export PATH="${HOME}/.local/bin:${PATH}"
-    elif [[ -f "${HOME}/.cargo/bin/uv" ]]; then
-        export PATH="${HOME}/.cargo/bin:${PATH}"
-    fi
-
-    if command -v uv &> /dev/null; then
-        info "uv installed successfully"
-        return 0
+    if curl -LsSf https://astral.sh/uv/install.sh | sh; then
+        if command -v uv &> /dev/null; then
+            info "uv installed successfully"
+            return 0
+        fi
     fi
 
     error "Could not install uv package manager"
@@ -107,9 +100,12 @@ run_discovery() {
 
     info "Starting EDOT Discovery Tool..."
     echo ""
+    
+    # Reconnect stdin to terminal for interactive prompts (needed for curl | bash)
+    exec </dev/tty
+    
     # uv run automatically installs dependencies from pyproject.toml
-    # Use </dev/tty to ensure interactive prompts work when piped from curl
-    uv run edot-discover </dev/tty
+    uv run edot-discover
 }
 
 main() {
