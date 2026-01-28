@@ -1,14 +1,22 @@
 # EDOT Cloud Forwarder - AWS Log Source Discovery Tool
 
-An interactive CLI tool that discovers AWS log sources and generates CloudFormation deployment commands for [EDOT Cloud Forwarder](https://www.elastic.co/guide/en/observability/current/edot-cloud-forwarder.html).
+Discover AWS log sources and deploy [EDOT Cloud Forwarder](https://www.elastic.co/guide/en/observability/current/edot-cloud-forwarder.html) with a single command.
 
-## Overview
+## Quick Start
 
-EDOT Cloud Forwarder is Elastic's OpenTelemetry-native serverless log collector deployed as an AWS Lambda function. This tool helps you:
+Open [AWS CloudShell](https://console.aws.amazon.com/cloudshell) and run:
 
-1. **Discover** VPC Flow Logs, ELB Access Logs, CloudTrail trails, and AWS WAF logs writing to S3 buckets
-2. **Select** which log sources to onboard via an interactive multi-select interface
-3. **Generate** CloudFormation deployment commands for EDOT Cloud Forwarder
+```bash
+curl -fsSL http://ela.st/onboard-ecf-aws | bash
+```
+
+That's it. The script installs the tool and launches an interactive wizard that:
+
+1. Discovers your VPC Flow Logs, ELB Access Logs, CloudTrail trails, and WAF logs
+2. Lets you select which sources to onboard
+3. Deploys EDOT Cloud Forwarder via CloudFormation
+
+> **Why CloudShell?** It has AWS credentials pre-configured and all required tools installed. No setup needed.
 
 ## Supported Log Sources
 
@@ -19,9 +27,102 @@ EDOT Cloud Forwarder is Elastic's OpenTelemetry-native serverless log collector 
 | CloudTrail | Trails (single/multi-region/organization) | S3 Bucket |
 | AWS WAF | Web ACLs (Regional and CloudFront) | S3 Bucket |
 
-## Requirements
+## What You'll Need
 
-- AWS credentials with the following permissions:
+- **Elastic Cloud OTLP endpoint** and **API key** - find these in Kibana under Add Data -> Applications -> OpenTelemetry
+
+---
+
+## Alternative Installation Methods
+
+### Local Installation with uv
+
+If you prefer to run locally instead of CloudShell:
+
+```bash
+# Install uv (Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone and run
+git clone https://github.com/strawgate/edot-cloudforwarder-onboarding-scripts.git
+cd edot-cloudforwarder-onboarding-scripts
+aws configure  # if not already configured
+uv run edot-discover
+```
+
+### Manual Script Review
+
+If you want to review the install script before running:
+
+```bash
+# Download and inspect
+curl -fsSL https://raw.githubusercontent.com/strawgate/edot-cloudforwarder-onboarding-scripts/main/install.sh -o install.sh
+cat install.sh
+
+# Run after review
+bash install.sh
+```
+
+---
+
+## Detailed Usage
+
+### Interactive Workflow
+
+```bash
+uv run edot-discover
+```
+
+The tool walks you through:
+
+1. **Credential verification** - displays your AWS account and caller identity
+2. **Region selection** - pick from all enabled regions in your account
+3. **Discovery** - finds all S3-backed log sources
+4. **Source selection** - multi-select interface (all sources pre-selected by default)
+5. **Elastic configuration** - enter your OTLP endpoint and API key
+6. **Dry run preview** - review CloudFormation commands (API key redacted)
+7. **Deployment** - optionally execute the deployments
+
+### Example Session
+
+```text
+EDOT Cloud Forwarder
+AWS Log Source Discovery & Onboarding Tool
+
+AWS Account: 123456789012
+Caller ARN: arn:aws:iam::123456789012:user/admin
+
+? Select AWS region to scan: us-east-1 (current)
+
+Scanning region us-east-1 for log sources...
+
+              Discovered 3 Log Source(s)
++----------------+-------------+------------+------------------------+
+| Type           | ID          | Resource   | S3 Destination         |
++----------------+-------------+------------+------------------------+
+| VPC Flow Logs  | fl-abc123   | vpc-xyz789 | arn:aws:s3:::my-vpc... |
+| ALB Access Log | my-alb      | arn:aws... | s3://my-alb-logs/alb   |
+| CloudTrail     | main-trail  | arn:aws... | s3://cloudtrail-logs   |
++----------------+-------------+------------+------------------------+
+
+? Select log sources to onboard: (Space to toggle, Enter to confirm)
+ > [X] fl-abc123 (vpc-xyz789) -> arn:aws:s3:::my-vpc-logs
+   [X] my-alb (ALB Access Logs) -> arn:aws:s3:::my-alb-logs
+   [X] main-trail (CloudTrail) -> arn:aws:s3:::cloudtrail-logs
+
+? OTLP Endpoint URL: https://my-deployment.apm.us-east-1.aws.cloud.es.io:443
+? Elastic API Key: ********
+
+? Execute 2 CloudFormation deployment(s)? Yes
+
+All 2 stack(s) initiated successfully!
+```
+
+---
+
+## Reference
+
+### Required IAM Permissions
 
 ```json
 {
@@ -40,165 +141,44 @@ EDOT Cloud Forwarder is Elastic's OpenTelemetry-native serverless log collector 
 }
 ```
 
-## Quick Start (AWS CloudShell)
+### Architecture Notes
 
-AWS CloudShell is the recommended environment - it has git, curl, and pre-configured AWS credentials.
+- **One stack per bucket+log type** - EDOT Cloud Forwarder requires dedicated processing per log type
+- **Same region deployment** - CloudFormation stack deploys in the same region as the S3 bucket
+- **Lambda-based** - each stack deploys a Lambda triggered by S3 events
+- **Idempotent** - stack names are deterministic, so re-running is safe
 
-```bash
-# One-line install and run
-curl -fsSL https://raw.githubusercontent.com/strawgate/edot-cloudforwarder-onboarding-scripts/main/install.sh | bash
+### CloudFormation Template
+
+The tool uses Elastic's published template:
+
 ```
-
-> **Security Note**: The `curl | bash` pattern executes remote code directly. Before running:
->
-> 1. **Review the script first**: [View install.sh on GitHub](https://raw.githubusercontent.com/strawgate/edot-cloudforwarder-onboarding-scripts/main/install.sh)
-> 2. **Or download and inspect locally**:
->
->    ```bash
->    curl -fsSL https://raw.githubusercontent.com/strawgate/edot-cloudforwarder-onboarding-scripts/main/install.sh -o install.sh
->    cat install.sh  # Review the script
->    bash install.sh  # Run after review
->    ```
-
-## Quick Start (Local with uv)
-
-The project uses [uv](https://github.com/astral-sh/uv) for dependency management. Install uv first:
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-Then run the discovery tool:
-
-```bash
-# Clone the repository
-git clone https://github.com/strawgate/edot-cloudforwarder-onboarding-scripts.git
-cd edot-cloudforwarder-onboarding-scripts
-
-# Configure AWS credentials (if not already done)
-aws configure
-
-# Run the discovery tool (uv automatically handles dependencies)
-uv run edot-discover
-```
-
-## Usage
-
-### Interactive Mode
-
-Simply run the tool and follow the prompts:
-
-```bash
-uv run edot-discover
-```
-
-The tool will:
-
-1. Verify your AWS credentials and display your account info
-2. Present a region picker with all enabled regions
-3. Discover all VPC Flow Logs, ELB Access Logs, CloudTrail trails, and WAF logs writing to S3
-4. Display results in a formatted table
-5. Present a multi-select interface (all sources pre-selected)
-6. Ask for your Elastic Cloud OTLP endpoint and API key
-7. Generate and display CloudFormation commands (with API key redacted)
-8. Optionally execute the deployments
-
-### Example Session
-
-```text
-EDOT Cloud Forwarder
-AWS Log Source Discovery & Onboarding Tool
-
-AWS Account: 123456789012
-Caller ARN: arn:aws:iam::123456789012:user/admin
-
-? Select AWS region to scan:
-> us-east-1 (current)
-  ap-northeast-1
-  eu-west-1
-  ...
-
-Scanning region us-east-1 for log sources...
-
-              Discovered 3 Log Source(s)
-+----------------+-------------+------------+------------------------+
-| Type           | ID          | Resource   | S3 Destination         |
-+----------------+-------------+------------+------------------------+
-| VPC Flow Logs  | fl-abc123   | vpc-xyz789 | arn:aws:s3:::my-vpc... |
-| ALB Access Log | my-alb      | arn:aws... | s3://my-alb-logs/alb   |
-| NLB Access Log | my-nlb      | arn:aws... | s3://my-nlb-logs/nlb   |
-+----------------+-------------+------------+------------------------+
-
-? Select log sources to onboard: (Use arrow keys, Space to toggle)
- > [X] fl-abc123 (vpc-xyz789) -> arn:aws:s3:::my-vpc-logs
-   [X] my-alb (ALB Access Logs) -> arn:aws:s3:::my-alb-logs
-   [X] my-nlb (NLB Access Logs) -> arn:aws:s3:::my-nlb-logs
-
-? OTLP Endpoint URL: https://my-deployment.apm.us-east-1.aws.cloud.es.io:443
-? Elastic API Key: ********
-
-Dry Run Preview
-[Commands displayed with API key redacted...]
-
-? Execute 2 CloudFormation deployment(s)? No
-
-Deployment cancelled. Commands have been printed above - copy and run manually when ready.
-```
-
-## Elastic Cloud Configuration
-
-To find your OTLP endpoint and API key:
-
-1. Log in to [Elastic Cloud](https://cloud.elastic.co/)
-2. Navigate to **Kibana** -> **Management** -> **Fleet**
-3. Go to **Agent Policies** -> Select your policy
-4. Find the **OTLP Endpoint** section
-
-Or create a new API key in **Kibana** -> **Management** -> **API Keys**.
-
-## Architecture Notes
-
-- **One stack per log type**: EDOT Cloud Forwarder requires a dedicated S3 bucket per log type (cannot mix VPC and ELB logs in the same bucket)
-- **Same region deployment**: The CloudFormation stack must be deployed in the same region as the S3 bucket
-- **Lambda-based**: Each stack deploys a Lambda function triggered by S3 events
-- **Deterministic naming**: Stack names are derived from bucket ARN and log type, making deployments idempotent
-
-## CloudFormation Template
-
-The tool uses Elastic's published CloudFormation template:
-
-```text
 https://edot-cloud-forwarder.s3.amazonaws.com/v0/latest/cloudformation/s3_logs-cloudformation.yaml
 ```
 
 Also available via AWS Serverless Application Repository as `edot-cloud-forwarder-s3-logs`.
 
+---
+
 ## Troubleshooting
 
 ### No sources found
 
-- Verify you have VPC Flow Logs, ELB Access Logs, CloudTrail trails, or WAF logs configured to write to S3
+- Verify you have log sources configured to write to S3 (VPC Flow Logs, ELB Access Logs, CloudTrail, or WAF)
 - Check you're scanning the correct region
-- Ensure your IAM permissions include `ec2:DescribeFlowLogs`, `elasticloadbalancing:Describe*`, `cloudtrail:DescribeTrails`, and `wafv2:*`
+- Ensure your IAM permissions include the required actions listed above
 
 ### Permission denied errors
 
-Your AWS credentials need the following permissions:
-
-- `ec2:DescribeFlowLogs`
-- `ec2:DescribeRegions`
-- `elasticloadbalancing:DescribeLoadBalancers`
-- `elasticloadbalancing:DescribeLoadBalancerAttributes`
-- `cloudtrail:DescribeTrails`
-- `wafv2:ListWebACLs`
-- `wafv2:GetLoggingConfiguration`
-- `sts:GetCallerIdentity`
+Your AWS credentials need the permissions listed in [Required IAM Permissions](#required-iam-permissions).
 
 ### CloudFormation deployment fails
 
 - Verify the S3 bucket exists and is in the same region as the stack
 - Check your Elastic API key is valid
-- Ensure `CAPABILITY_NAMED_IAM` is accepted (the script handles this automatically)
+- Ensure `CAPABILITY_NAMED_IAM` is accepted (handled automatically by the tool)
+
+---
 
 ## Development
 

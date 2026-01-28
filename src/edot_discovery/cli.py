@@ -17,7 +17,7 @@ import re
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 import boto3
@@ -44,6 +44,20 @@ LOG_TYPE_MAP = {
     "waf": "waf",
 }
 
+# Reverse mapping: CloudFormation log type -> internal log_type
+CF_TO_INTERNAL_LOG_TYPE = {v: k for k, v in LOG_TYPE_MAP.items()}
+
+
+@dataclass
+class ExistingForwarder:
+    """Information about an existing EDOT Cloud Forwarder stack."""
+
+    stack_name: str
+    stack_status: str  # e.g., CREATE_COMPLETE, UPDATE_COMPLETE
+    otlp_endpoint: str
+    bucket_arn: str
+    log_type: str  # CloudFormation value: vpcflow, elbaccess, cloudtrail, waf
+
 
 @dataclass
 class LogSource:
@@ -56,6 +70,7 @@ class LogSource:
     destination: str  # Full S3 destination path
     bucket_arn: str  # S3 bucket ARN (without path)
     region: str  # AWS region
+    existing_forwarder: ExistingForwarder | None = field(default=None)
 
 
 def get_default_region() -> str:
@@ -105,6 +120,100 @@ def extract_bucket_arn(destination: str) -> str:
         bucket_name = destination.replace("s3://", "").split("/")[0]
         return f"arn:aws:s3:::{bucket_name}"
     return destination
+
+
+def get_existing_forwarders(
+    session: boto3.Session, region: str
+) -> dict[tuple[str, str], ExistingForwarder]:
+    """
+    Find existing EDOT Cloud Forwarder stacks in the region.
+
+    Returns a dict mapping (bucket_arn, internal_log_type) to ExistingForwarder info.
+    Only returns stacks in a "healthy" state (CREATE_COMPLETE, UPDATE_COMPLETE, etc.)
+    """
+    forwarders: dict[tuple[str, str], ExistingForwarder] = {}
+
+    # Stack statuses that indicate a working forwarder
+    healthy_statuses = {
+        "CREATE_COMPLETE",
+        "UPDATE_COMPLETE",
+        "UPDATE_ROLLBACK_COMPLETE",
+        "IMPORT_COMPLETE",
+    }
+
+    try:
+        cfn = session.client("cloudformation", region_name=region)
+
+        # List all stacks (paginate manually since list_stacks doesn't have a paginator)
+        next_token: str | None = None
+        while True:
+            if next_token:
+                response = cfn.list_stacks(
+                    StackStatusFilter=list(healthy_statuses),
+                    NextToken=next_token,
+                )
+            else:
+                response = cfn.list_stacks(StackStatusFilter=list(healthy_statuses))
+
+            for stack_summary in response.get("StackSummaries", []):
+                stack_name = stack_summary.get("StackName", "")
+
+                # Only process stacks matching our naming pattern
+                if not stack_name.startswith("edot-cf-"):
+                    continue
+
+                stack_status = stack_summary.get("StackStatus", "")
+
+                try:
+                    # Get stack details to extract parameters
+                    stack_response = cfn.describe_stacks(StackName=stack_name)
+                    stacks = stack_response.get("Stacks", [])
+                    if not stacks:
+                        continue
+
+                    stack = stacks[0]
+                    params = {
+                        p["ParameterKey"]: p.get("ParameterValue", "")
+                        for p in stack.get("Parameters", [])
+                    }
+
+                    bucket_arn = params.get("S3BucketARN", "")
+                    cf_log_type = params.get("EdotCloudForwarderS3LogsType", "")
+                    otlp_endpoint = params.get("OTLPEndpoint", "")
+
+                    if not bucket_arn or not cf_log_type:
+                        continue
+
+                    # Convert CF log type to internal log type
+                    internal_log_type = CF_TO_INTERNAL_LOG_TYPE.get(cf_log_type)
+                    if not internal_log_type:
+                        continue
+
+                    forwarder = ExistingForwarder(
+                        stack_name=stack_name,
+                        stack_status=stack_status,
+                        otlp_endpoint=otlp_endpoint,
+                        bucket_arn=bucket_arn,
+                        log_type=cf_log_type,
+                    )
+
+                    forwarders[(bucket_arn, internal_log_type)] = forwarder
+
+                except ClientError as e:
+                    console.print(
+                        f"[yellow]Warning: Could not describe stack {stack_name}: {e}[/yellow]"
+                    )
+
+            next_token = response.get("NextToken")
+            if not next_token:
+                break
+
+    except ClientError as e:
+        console.print(f"[yellow]Warning: Could not list CloudFormation stacks: {e}[/yellow]")
+    except Exception as e:
+        console.print(f"[yellow]Warning: Error checking existing forwarders: {e}[/yellow]")
+
+    return forwarders
 
 
 def discover_flow_logs(session: boto3.Session, region: str) -> list[LogSource]:
@@ -323,10 +432,16 @@ def discover_waf_logs(session: boto3.Session, region: str) -> list[LogSource]:
 
     for scope in scopes:
         try:
-            # List all Web ACLs for this scope
-            paginator = wafv2.get_paginator("list_web_acls")
-            for page in paginator.paginate(Scope=scope):
-                for acl in page.get("WebACLs", []):
+            # List all Web ACLs for this scope using manual pagination
+            # (list_web_acls doesn't support boto3 paginators)
+            next_marker: str | None = None
+            while True:
+                if next_marker:
+                    response = wafv2.list_web_acls(Scope=scope, NextMarker=next_marker)
+                else:
+                    response = wafv2.list_web_acls(Scope=scope)
+
+                for acl in response.get("WebACLs", []):
                     acl_arn = acl.get("ARN", "")
                     acl_name = acl.get("Name", "unknown")
 
@@ -368,6 +483,11 @@ def discover_waf_logs(session: boto3.Session, region: str) -> list[LogSource]:
                                 f"[yellow]Warning: Could not get logging config "
                                 f"for {acl_name}: {e}[/yellow]"
                             )
+
+                # Check for more results
+                next_marker = response.get("NextMarker")
+                if not next_marker:
+                    break
         except ClientError as e:
             console.print(f"[yellow]Warning: Could not list WAF Web ACLs ({scope}): {e}[/yellow]")
         except Exception as e:
@@ -379,7 +499,7 @@ def discover_waf_logs(session: boto3.Session, region: str) -> list[LogSource]:
 def discover_all_sources(region: str) -> list[LogSource]:
     """Discover all log sources in the specified region."""
     session = boto3.Session(region_name=region)
-    all_sources = []
+    all_sources: list[LogSource] = []
 
     with Progress(
         SpinnerColumn(),
@@ -401,74 +521,99 @@ def discover_all_sources(region: str) -> list[LogSource]:
         progress.update(task, description="Scanning WAF Web ACLs...")
         all_sources.extend(discover_waf_logs(session, region))
 
+        progress.update(task, description="Checking existing EDOT forwarders...")
+        existing_forwarders = get_existing_forwarders(session, region)
+
+    # Annotate sources with existing forwarder info
+    for source in all_sources:
+        key = (source.bucket_arn, source.log_type)
+        if key in existing_forwarders:
+            source.existing_forwarder = existing_forwarders[key]
+
     return all_sources
 
 
 def display_results_table(sources: list[LogSource]) -> None:
     """Display discovered sources in a rich table."""
+    # Count sources with existing forwarders
+    configured_count = sum(1 for s in sources if s.existing_forwarder)
+
+    title = f"Discovered {len(sources)} Log Source(s)"
+    if configured_count > 0:
+        title += f" ({configured_count} already forwarding)"
+
     table = Table(
-        title=f"Discovered {len(sources)} Log Source(s)",
+        title=title,
         box=box.ROUNDED,
         show_lines=True,
     )
     table.add_column("Type", style="cyan", no_wrap=True)
     table.add_column("ID", style="magenta")
-    table.add_column("Resource", max_width=35, overflow="ellipsis")
-    table.add_column("S3 Destination", style="green", max_width=45, overflow="ellipsis")
+    table.add_column("S3 Destination", style="green", max_width=40, overflow="ellipsis")
+    table.add_column("Status", max_width=35, overflow="ellipsis")
 
     for source in sources:
+        if source.existing_forwarder:
+            # Extract host from OTLP endpoint for brevity
+            endpoint = source.existing_forwarder.otlp_endpoint
+            try:
+                from urllib.parse import urlparse
+
+                host = urlparse(endpoint).netloc or endpoint
+            except Exception:
+                host = endpoint
+            status = f"[green]Forwarding → {host}[/green]"
+        else:
+            status = "[dim]Not configured[/dim]"
+
         table.add_row(
             source.display_type,
             source.source_id,
-            source.resource_id,
             source.destination,
+            status,
         )
 
     console.print(table)
 
 
+def _build_choice_label(source: LogSource) -> str:
+    """Build a display label for a source in the selection UI."""
+    if source.existing_forwarder:
+        # Show that it's already configured with the stack name
+        stack_name = source.existing_forwarder.stack_name
+        label = f"{source.source_id} -> {source.bucket_arn} [CONFIGURED: {stack_name}]"
+    else:
+        label = f"{source.source_id} ({source.display_type}) -> {source.bucket_arn}"
+
+    # Truncate long labels
+    if len(label) > 90:
+        label = label[:87] + "..."
+    return label
+
+
 def build_selection_choices(sources: list[LogSource]) -> list:
     """Build grouped choices for questionary checkbox."""
-    choices = []
+    choices: list[Choice | Separator] = []
 
-    # Group by log type
-    flow_logs = [s for s in sources if s.log_type == "vpc_flow_logs"]
-    elb_logs = [s for s in sources if s.log_type == "elb_access_logs"]
-    cloudtrail_logs = [s for s in sources if s.log_type == "cloudtrail"]
-    waf_logs = [s for s in sources if s.log_type == "waf"]
+    # Configuration for each log type group
+    log_type_groups = [
+        ("vpc_flow_logs", "--- VPC Flow Logs ---"),
+        ("elb_access_logs", "--- ELB Access Logs ---"),
+        ("cloudtrail", "--- CloudTrail ---"),
+        ("waf", "--- AWS WAF ---"),
+    ]
 
-    if flow_logs:
-        choices.append(Separator("--- VPC Flow Logs ---"))
-        for source in flow_logs:
-            label = f"{source.source_id} ({source.resource_id}) -> {source.bucket_arn}"
-            # Truncate long labels
-            if len(label) > 80:
-                label = label[:77] + "..."
-            choices.append(Choice(title=label, value=source, checked=True))
+    for log_type, separator_label in log_type_groups:
+        group_sources = [s for s in sources if s.log_type == log_type]
+        if not group_sources:
+            continue
 
-    if elb_logs:
-        choices.append(Separator("--- ELB Access Logs ---"))
-        for source in elb_logs:
-            label = f"{source.source_id} ({source.display_type}) -> {source.bucket_arn}"
-            if len(label) > 80:
-                label = label[:77] + "..."
-            choices.append(Choice(title=label, value=source, checked=True))
-
-    if cloudtrail_logs:
-        choices.append(Separator("--- CloudTrail ---"))
-        for source in cloudtrail_logs:
-            label = f"{source.source_id} ({source.display_type}) -> {source.bucket_arn}"
-            if len(label) > 80:
-                label = label[:77] + "..."
-            choices.append(Choice(title=label, value=source, checked=True))
-
-    if waf_logs:
-        choices.append(Separator("--- AWS WAF ---"))
-        for source in waf_logs:
-            label = f"{source.source_id} ({source.display_type}) -> {source.bucket_arn}"
-            if len(label) > 80:
-                label = label[:77] + "..."
-            choices.append(Choice(title=label, value=source, checked=True))
+        choices.append(Separator(separator_label))
+        for source in group_sources:
+            label = _build_choice_label(source)
+            # Sources with existing forwarders are unchecked by default
+            is_checked = source.existing_forwarder is None
+            choices.append(Choice(title=label, value=source, checked=is_checked))
 
     return choices
 
@@ -537,6 +682,7 @@ def generate_cloudformation_command(
         CLOUDFORMATION_TEMPLATE_URL,
         "--capabilities",
         "CAPABILITY_NAMED_IAM",
+        "CAPABILITY_AUTO_EXPAND",
         "--region",
         region,
         "--parameters",
@@ -767,12 +913,20 @@ def main():
     # Build selection choices
     choices = build_selection_choices(sources)
 
-    # Multi-select sources (pre-selected, deselect to exclude)
-    console.print(
-        "[dim]All sources are pre-selected. Use arrow keys to navigate, "
-        "Space to toggle, Enter to confirm.[/dim]"
-    )
-    selected = questionary.checkbox(
+    # Count already-configured sources for messaging
+    already_configured = sum(1 for s in sources if s.existing_forwarder)
+    if already_configured > 0:
+        console.print(
+            f"[dim]Sources not yet configured are pre-selected. "
+            f"{already_configured} source(s) already have forwarders (marked [CONFIGURED]).[/dim]"
+        )
+    else:
+        console.print(
+            "[dim]All sources are pre-selected. Use arrow keys to navigate, "
+            "Space to toggle, Enter to confirm.[/dim]"
+        )
+
+    selected: list[LogSource] = questionary.checkbox(
         "Select log sources to onboard:",
         choices=choices,
     ).ask()
@@ -782,7 +936,26 @@ def main():
         sys.exit(0)
 
     console.print()
-    console.print(f"[green]Selected {len(selected)} source(s) for onboarding.[/green]")
+
+    # Separate new sources from already-configured ones
+    new_sources = [s for s in selected if s.existing_forwarder is None]
+    skipped_sources = [s for s in selected if s.existing_forwarder is not None]
+
+    if skipped_sources:
+        console.print(
+            f"[yellow]Skipping {len(skipped_sources)} already-configured source(s):[/yellow]"
+        )
+        for s in skipped_sources:
+            console.print(f"  [dim]- {s.source_id} ({s.existing_forwarder.stack_name})[/dim]")  # type: ignore[union-attr]
+        console.print()
+
+    if not new_sources:
+        console.print(
+            "[yellow]All selected sources are already configured. Nothing to deploy.[/yellow]"
+        )
+        sys.exit(0)
+
+    console.print(f"[green]Selected {len(new_sources)} new source(s) for onboarding.[/green]")
     console.print()
 
     # Collect Elastic Cloud configuration
@@ -816,8 +989,8 @@ def main():
 
     console.print()
 
-    # Generate deployment commands
-    commands = generate_deployment_commands(selected, otlp_endpoint, api_key)
+    # Generate deployment commands (only for new sources, not already-configured)
+    commands = generate_deployment_commands(new_sources, otlp_endpoint, api_key)
 
     # Display dry-run preview
     console.print(
