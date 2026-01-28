@@ -42,18 +42,27 @@ uv run edot-discover
 edot-cloudforwarder-onboarding-scripts/
 ├── src/
 │   └── edot_discovery/
-│       ├── __init__.py      # Package version
-│       └── cli.py           # Main CLI logic
+│       ├── __init__.py          # Package version
+│       ├── cli.py               # Main CLI entry point and user interaction
+│       └── discovery/           # AWS resource discovery modules
+│           ├── __init__.py      # Discovery coordinator (discover_all_sources)
+│           ├── types.py         # Data classes (LogSource, ExistingForwarder)
+│           ├── utils.py         # Shared utilities (CF commands, validation)
+│           ├── flow_logs.py     # VPC Flow Logs discovery
+│           ├── elb_logs.py      # ELB/ALB/NLB Access Logs discovery
+│           ├── cloudtrail.py    # CloudTrail trails discovery
+│           ├── waf_logs.py      # AWS WAF logs discovery
+│           └── forwarders.py    # Existing EDOT forwarder detection
 ├── tests/
 │   ├── __init__.py
-│   ├── conftest.py          # Pytest fixtures
-│   └── test_cli.py          # CLI tests
-├── install.sh               # One-line installer
-├── pyproject.toml           # Project configuration (dependencies, metadata)
+│   ├── conftest.py              # Pytest fixtures
+│   └── test_cli.py              # CLI and utility tests
+├── install.sh                   # One-line installer for CloudShell
+├── pyproject.toml               # Project configuration (dependencies, metadata)
 ├── README.md
 ├── CONTRIBUTING.md
 ├── CODE_STYLE.md
-└── DEVELOPING.md            # This file
+└── DEVELOPING.md                # This file
 ```
 
 ## Running Tests

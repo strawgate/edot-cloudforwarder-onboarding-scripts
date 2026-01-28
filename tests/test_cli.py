@@ -394,9 +394,10 @@ class TestGenerateDeploymentCommands:
         )
 
         assert len(commands) == 1
-        display_name, bucket_arn, log_type, cmd = commands[0]
+        display_name, bucket_arn, bucket_region, log_type, cmd = commands[0]
         assert display_name == "VPC Flow Logs"
         assert bucket_arn == "arn:aws:s3:::my-bucket"
+        assert bucket_region == "us-east-1"
         assert log_type == "vpc_flow_logs"
         # Check that region is us-east-1 (bucket region, not resource region)
         assert "--region" in cmd
@@ -415,8 +416,9 @@ class TestGenerateDeploymentCommands:
         )
 
         assert len(commands) == 1
-        display_name, bucket_arn, log_type, cmd = commands[0]
+        display_name, bucket_arn, bucket_region, log_type, cmd = commands[0]
         # Should deploy in bucket region (us-east-1), not resource region (us-west-2)
+        assert bucket_region == "us-east-1"
         assert "--region" in cmd
         region_idx = cmd.index("--region")
         assert cmd[region_idx + 1] == "us-east-1"
@@ -452,7 +454,8 @@ class TestGenerateDeploymentCommands:
         # Should generate only one command for same bucket+log_type
         assert len(commands) == 1
         # Should use bucket region (eu-west-1), not resource regions
-        _, _, _, cmd = commands[0]
+        _, _, bucket_region, _, cmd = commands[0]
+        assert bucket_region == "eu-west-1"
         assert "--region" in cmd
         region_idx = cmd.index("--region")
         assert cmd[region_idx + 1] == "eu-west-1"
@@ -491,15 +494,17 @@ class TestGenerateDeploymentCommands:
 
         assert len(commands) == 2
         # Check first command uses bucket-1 region
-        _, bucket_arn1, _, cmd1 = commands[0]
+        _, bucket_arn1, bucket_region1, _, cmd1 = commands[0]
         assert bucket_arn1 == "arn:aws:s3:::bucket-1"
+        assert bucket_region1 == "us-east-1"
         assert "--region" in cmd1
         region_idx1 = cmd1.index("--region")
         assert cmd1[region_idx1 + 1] == "us-east-1"
 
         # Check second command uses bucket-2 region
-        _, bucket_arn2, _, cmd2 = commands[1]
+        _, bucket_arn2, bucket_region2, _, cmd2 = commands[1]
         assert bucket_arn2 == "arn:aws:s3:::bucket-2"
+        assert bucket_region2 == "us-west-2"
         assert "--region" in cmd2
         region_idx2 = cmd2.index("--region")
         assert cmd2[region_idx2 + 1] == "us-west-2"
@@ -533,7 +538,7 @@ class TestGenerateDeploymentCommands:
         )
 
         assert len(commands) == 2
-        log_types = {log_type for _, _, log_type, _ in commands}
+        log_types = {log_type for _, _, _, log_type, _ in commands}
         assert "vpc_flow_logs" in log_types
         assert "elb_access_logs" in log_types
 
@@ -559,8 +564,9 @@ class TestGenerateDeploymentCommands:
         )
 
         assert len(commands) == 1
-        _, _, _, cmd = commands[0]
+        _, _, bucket_region, _, cmd = commands[0]
         # Should fallback to resource region
+        assert bucket_region == "us-west-2"
         assert "--region" in cmd
         region_idx = cmd.index("--region")
         assert cmd[region_idx + 1] == "us-west-2"
@@ -607,5 +613,5 @@ class TestGenerateDeploymentCommands:
                 [source], "https://example.com", "test-api-key", mock_session
             )
             assert len(commands) == 1
-            display_name, _, _, _ = commands[0]
+            display_name, _, _, _, _ = commands[0]
             assert display_name == expected_display

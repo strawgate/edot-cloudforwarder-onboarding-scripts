@@ -135,7 +135,7 @@ def generate_deployment_commands(
     otlp_endpoint: str,
     api_key: str,
     session: boto3.Session | None = None,
-) -> list[tuple[str, str, str, list[str]]]:
+) -> list[tuple[str, str, str, str, list[str]]]:
     """
     Generate CloudFormation deployment commands for selected sources.
 
@@ -146,7 +146,7 @@ def generate_deployment_commands(
         session: Optional boto3 Session. If not provided, creates a new session.
 
     Returns:
-        List of tuples: (display_name, bucket_arn, log_type, command_list)
+        List of tuples: (display_name, bucket_arn, bucket_region, log_type, command_list)
 
     Note: One stack per unique bucket+log_type combination.
     Uses the bucket's actual region (not the resource region) for deployment.
@@ -154,7 +154,7 @@ def generate_deployment_commands(
     if session is None:
         session = boto3.Session()
 
-    commands: list[tuple[str, str, str, list[str]]] = []
+    commands: list[tuple[str, str, str, str, list[str]]] = []
 
     # Group sources by (bucket_arn, log_type) - we'll determine bucket region separately
     buckets_by_type: dict[tuple[str, str], list[LogSource]] = {}
@@ -211,7 +211,7 @@ def generate_deployment_commands(
             region=bucket_region,
         )
 
-        commands.append((display_name, bucket_arn, log_type, cmd))
+        commands.append((display_name, bucket_arn, bucket_region, log_type, cmd))
 
     return commands
 
@@ -409,19 +409,21 @@ def main() -> None:
     console.print(
         Panel(
             "Review the CloudFormation commands below before execution.\n"
-            "One stack will be created per unique S3 bucket and log type combination.",
+            "One stack will be created per unique S3 bucket and log type combination.\n"
+            "Commands are formatted for copy/paste if you prefer to run manually.",
             title="Dry Run Preview",
             border_style="yellow",
         )
     )
     console.print()
 
-    for i, (display_name, bucket_arn, _log_type, cmd) in enumerate(commands, 1):
-        console.print(f"[bold cyan]Stack {i}: {display_name}[/bold cyan]")
-        success(f"Bucket: {bucket_arn}")
+    for i, (display_name, bucket_arn, bucket_region, _log_type, cmd) in enumerate(commands, 1):
+        # Format as bash comments so output can be copied and run as a script
+        console.print(f"[bold cyan]# Stack {i}: {display_name}[/bold cyan]")
+        console.print(f"[green]# Bucket: {bucket_arn} ({bucket_region})[/green]")
         # Display redacted command
         redacted_cmd = redact_command_for_display(cmd)
-        dim(redacted_cmd)
+        console.print(redacted_cmd)
         console.print()
 
     # Confirm execution
@@ -447,7 +449,7 @@ def main() -> None:
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        for display_name, bucket_arn, _log_type, cmd in commands:
+        for display_name, bucket_arn, _bucket_region, _log_type, cmd in commands:
             task = progress.add_task(f"Deploying {display_name}...", total=None)
             deployment_success, output = execute_deployment(cmd)
             progress.remove_task(task)
@@ -487,6 +489,9 @@ def main() -> None:
                 border_style="yellow",
             )
         )
+
+    # Explicit exit to ensure clean termination (especially when run via install script)
+    sys.exit(0 if failed == 0 else 1)
 
 
 if __name__ == "__main__":

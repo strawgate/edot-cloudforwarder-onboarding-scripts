@@ -104,9 +104,3 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",
 ]
-
-[dependency-groups]
-dev = [
-    "basedpyright>=1.37.2",
-    "ruff>=0.4.0",
-]

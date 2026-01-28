@@ -96,22 +96,35 @@ Caller ARN: arn:aws:iam::123456789012:user/admin
 
 Scanning region us-east-1 for log sources...
 
-              Discovered 3 Log Source(s)
-+----------------+-------------+------------+------------------------+
-| Type           | ID          | Resource   | S3 Destination         |
-+----------------+-------------+------------+------------------------+
-| VPC Flow Logs  | fl-abc123   | vpc-xyz789 | arn:aws:s3:::my-vpc... |
-| ALB Access Log | my-alb      | arn:aws... | s3://my-alb-logs/alb   |
-| CloudTrail     | main-trail  | arn:aws... | s3://cloudtrail-logs   |
-+----------------+-------------+------------+------------------------+
+                    Discovered 3 Log Source(s)
+╭────────────────┬─────────────┬──────────────────────┬────────────────╮
+│ Type           │ ID          │ S3 Destination       │ Status         │
+├────────────────┼─────────────┼──────────────────────┼────────────────┤
+│ VPC Flow Logs  │ fl-abc123   │ s3://my-vpc-logs/... │ Not configured │
+│ ALB Access Log │ my-alb      │ s3://my-alb-logs/alb │ Not configured │
+│ CloudTrail     │ main-trail  │ s3://cloudtrail-logs │ Not configured │
+╰────────────────┴─────────────┴──────────────────────┴────────────────╯
 
 ? Select log sources to onboard: (Space to toggle, Enter to confirm)
- > [X] fl-abc123 (vpc-xyz789) -> arn:aws:s3:::my-vpc-logs
+ > [X] fl-abc123 (VPC Flow Logs) -> arn:aws:s3:::my-vpc-logs
    [X] my-alb (ALB Access Logs) -> arn:aws:s3:::my-alb-logs
    [X] main-trail (CloudTrail) -> arn:aws:s3:::cloudtrail-logs
 
 ? OTLP Endpoint URL: https://my-deployment.apm.us-east-1.aws.cloud.es.io:443
 ? Elastic API Key: ********
+
+╭─────────────── Dry Run Preview ───────────────╮
+│ Review the CloudFormation commands below...   │
+│ Commands are formatted for copy/paste.        │
+╰───────────────────────────────────────────────╯
+
+# Stack 1: VPC Flow Logs
+# Bucket: arn:aws:s3:::my-vpc-logs (us-east-1)
+aws cloudformation create-stack --stack-name edot-cf-vpcflow-my-vpc-logs ...
+
+# Stack 2: ELB Access Logs
+# Bucket: arn:aws:s3:::my-alb-logs (us-east-1)
+aws cloudformation create-stack --stack-name edot-cf-elbaccess-my-alb-logs ...
 
 ? Execute 2 CloudFormation deployment(s)? Yes
 
@@ -135,6 +148,9 @@ All 2 stack(s) initiated successfully!
     "cloudtrail:DescribeTrails",
     "wafv2:ListWebACLs",
     "wafv2:GetLoggingConfiguration",
+    "s3:GetBucketLocation",
+    "cloudformation:ListStacks",
+    "cloudformation:DescribeStacks",
     "sts:GetCallerIdentity"
   ],
   "Resource": "*"
