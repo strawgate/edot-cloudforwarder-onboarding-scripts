@@ -172,21 +172,35 @@ def generate_deployment_commands(
         if bucket_region is None:
             # Fallback to first source's region if we can't determine bucket region
             bucket_region = sources[0].region
-            warning(
-                f"Using resource region {bucket_region} for bucket {bucket_arn} "
-                "(could not determine bucket region). This may cause deployment issues if the "
-                "bucket is in a different region."
+            console.print()
+            console.print(
+                Panel(
+                    f"Could not determine region for bucket:\n"
+                    f"  {bucket_arn}\n\n"
+                    f"Falling back to resource region: [bold]{bucket_region}[/bold]\n\n"
+                    f"This may cause deployment issues if the bucket is actually\n"
+                    f"in a different region.",
+                    title="[yellow]Warning: Unknown Bucket Region[/yellow]",
+                    border_style="yellow",
+                )
             )
         else:
             # Check if any sources have a different region than the bucket
             # This is valid - services can write cross-region, but notifications require same-region
             resource_regions = {s.region for s in sources}
             if bucket_region not in resource_regions:
-                warning(
-                    f"Note: Bucket {bucket_arn} is in {bucket_region}, but resources "
-                    f"are in {', '.join(resource_regions)}. This is valid - services can write "
-                    f"cross-region, but deploying stack in bucket region {bucket_region} "
-                    f"(required for S3 notifications)."
+                console.print()
+                console.print(
+                    Panel(
+                        f"Bucket: {bucket_arn}\n"
+                        f"  Bucket region: [bold]{bucket_region}[/bold]\n"
+                        f"  Resource region(s): [bold]{', '.join(resource_regions)}[/bold]\n\n"
+                        f"This is valid - AWS services can write logs cross-region.\n"
+                        f"The stack will be deployed in [bold]{bucket_region}[/bold]\n"
+                        f"(required for S3 event notifications).",
+                        title="[cyan]Note: Cross-Region Configuration[/cyan]",
+                        border_style="cyan",
+                    )
                 )
 
         # Generate deterministic stack name
@@ -409,8 +423,9 @@ def main() -> None:
     console.print(
         Panel(
             "Review the CloudFormation commands below before execution.\n"
-            "One stack will be created per unique S3 bucket and log type combination.\n"
-            "Commands are formatted for copy/paste if you prefer to run manually.",
+            "One stack will be created per unique S3 bucket and log type combination.\n\n"
+            "Commands are formatted for copy/paste if you prefer to run manually.\n"
+            "[dim]Note: API key is shown as <REDACTED> - substitute your actual key.[/dim]",
             title="Dry Run Preview",
             border_style="yellow",
         )

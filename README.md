@@ -113,10 +113,11 @@ Scanning region us-east-1 for log sources...
 ? OTLP Endpoint URL: https://my-deployment.apm.us-east-1.aws.cloud.es.io:443
 ? Elastic API Key: ********
 
-╭─────────────── Dry Run Preview ───────────────╮
-│ Review the CloudFormation commands below...   │
-│ Commands are formatted for copy/paste.        │
-╰───────────────────────────────────────────────╯
+╭──────────────────── Dry Run Preview ────────────────────╮
+│ Review the CloudFormation commands below...             │
+│ Commands are formatted for copy/paste.                  │
+│ Note: API key is shown as <REDACTED> - substitute yours │
+╰─────────────────────────────────────────────────────────╯
 
 # Stack 1: VPC Flow Logs
 # Bucket: arn:aws:s3:::my-vpc-logs (us-east-1)
