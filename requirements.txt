@@ -1,0 +1,9 @@
+# EDOT Cloud Forwarder - AWS Log Discovery Tool
+# Install: pip install --user -r requirements.txt
+# Requires Python 3.10+
+
+questionary>=2.0.0
+rich>=13.0.0
+boto3>=1.35.0
+# Pin urllib3 to avoid CVE-2025-66418/66471 DoS vulnerability
+urllib3>=2.0.0
