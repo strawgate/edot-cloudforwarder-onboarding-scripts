@@ -19,24 +19,33 @@ EDOT Cloud Forwarder is Elastic's OpenTelemetry-native serverless log collector 
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.10+
 - AWS credentials with the following permissions:
-  ```json
-  {
-    "Effect": "Allow",
-    "Action": [
-      "ec2:DescribeFlowLogs",
-      "elasticloadbalancing:DescribeLoadBalancers",
-      "elasticloadbalancing:DescribeLoadBalancerAttributes",
-      "sts:GetCallerIdentity"
-    ],
-    "Resource": "*"
-  }
-  ```
+
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "ec2:DescribeFlowLogs",
+    "ec2:DescribeRegions",
+    "elasticloadbalancing:DescribeLoadBalancers",
+    "elasticloadbalancing:DescribeLoadBalancerAttributes",
+    "sts:GetCallerIdentity"
+  ],
+  "Resource": "*"
+}
+```
 
 ## Quick Start (AWS CloudShell)
 
 AWS CloudShell is the recommended environment - it has Python, pip, and pre-configured AWS credentials.
+
+```bash
+# One-line install and run
+curl -fsSL https://raw.githubusercontent.com/elastic/edot-cloudforwarder-onboarding-scripts/main/install.sh | bash
+```
+
+Or manually:
 
 ```bash
 # Clone the repository
@@ -84,24 +93,28 @@ python discover.py
 The tool will:
 
 1. Verify your AWS credentials and display your account info
-2. Ask for the AWS region to scan
+2. Present a region picker with all enabled regions
 3. Discover all VPC Flow Logs and ELB Access Logs writing to S3
 4. Display results in a formatted table
 5. Present a multi-select interface (all sources pre-selected)
 6. Ask for your Elastic Cloud OTLP endpoint and API key
-7. Generate and display CloudFormation commands
+7. Generate and display CloudFormation commands (with API key redacted)
 8. Optionally execute the deployments
 
 ### Example Session
 
-```
+```text
 EDOT Cloud Forwarder
 AWS Log Source Discovery & Onboarding Tool
 
 AWS Account: 123456789012
 Caller ARN: arn:aws:iam::123456789012:user/admin
 
-? AWS Region to scan: us-east-1
+? Select AWS region to scan:
+> us-east-1 (current)
+  ap-northeast-1
+  eu-west-1
+  ...
 
 Scanning region us-east-1 for log sources...
 
@@ -123,7 +136,7 @@ Scanning region us-east-1 for log sources...
 ? Elastic API Key: ********
 
 Dry Run Preview
-[Commands displayed here...]
+[Commands displayed with API key redacted...]
 
 ? Execute 2 CloudFormation deployment(s)? No
 
@@ -146,11 +159,13 @@ Or create a new API key in **Kibana** -> **Management** -> **API Keys**.
 - **One stack per log type**: EDOT Cloud Forwarder requires a dedicated S3 bucket per log type (cannot mix VPC and ELB logs in the same bucket)
 - **Same region deployment**: The CloudFormation stack must be deployed in the same region as the S3 bucket
 - **Lambda-based**: Each stack deploys a Lambda function triggered by S3 events
+- **Deterministic naming**: Stack names are derived from bucket ARN and log type, making deployments idempotent
 
 ## CloudFormation Template
 
 The tool uses Elastic's published CloudFormation template:
-```
+
+```text
 https://edot-cloud-forwarder.s3.amazonaws.com/v0/latest/cloudformation/s3_logs-cloudformation.yaml
 ```
 
@@ -167,7 +182,9 @@ Also available via AWS Serverless Application Repository as `edot-cloud-forwarde
 ### Permission denied errors
 
 Your AWS credentials need the following permissions:
+
 - `ec2:DescribeFlowLogs`
+- `ec2:DescribeRegions`
 - `elasticloadbalancing:DescribeLoadBalancers`
 - `elasticloadbalancing:DescribeLoadBalancerAttributes`
 - `sts:GetCallerIdentity`
@@ -180,13 +197,7 @@ Your AWS credentials need the following permissions:
 
 ## Development
 
-```bash
-# Install dev dependencies
-pip install -r requirements.txt
-
-# Run linting
-python -m py_compile discover.py
-```
+See [DEVELOPING.md](DEVELOPING.md) for development setup and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 ## License
 

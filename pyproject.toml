@@ -1,0 +1,106 @@
+[project]
+name = "edot-discovery"
+version = "0.1.0"
+description = "AWS Log Source Discovery Tool for EDOT Cloud Forwarder"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Elastic" }
+]
+keywords = ["aws", "elastic", "opentelemetry", "logs", "observability"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Logging",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "questionary>=2.0.0",
+    "rich>=13.0.0",
+    "boto3>=1.35.0",
+    "urllib3>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+    "boto3-stubs[ec2,elbv2,elb,sts]>=1.35.0",
+]
+
+[project.scripts]
+edot-discover = "edot_discovery.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/elastic/edot-cloudforwarder-onboarding-scripts"
+Documentation = "https://www.elastic.co/guide/en/observability/current/edot-cloud-forwarder.html"
+Repository = "https://github.com/elastic/edot-cloudforwarder-onboarding-scripts"
+Issues = "https://github.com/elastic/edot-cloudforwarder-onboarding-scripts/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/edot_discovery"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "S",      # flake8-bandit (security)
+    "T20",    # flake8-print
+]
+ignore = [
+    "S603",   # subprocess without shell=True - we use shell=False intentionally
+    "S607",   # partial executable path - aws CLI is expected in PATH
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]  # Allow assert in tests
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["questionary.*", "boto3.*", "botocore.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --cov=edot_discovery --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src/edot_discovery"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
