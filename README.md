@@ -29,7 +29,7 @@ That's it. The script installs the tool and launches an interactive wizard that:
 
 ## What You'll Need
 
-- **Elastic Cloud OTLP endpoint** and **API key** - find these in Kibana under Add Data -> Applications -> OpenTelemetry
+- **Elastic Cloud OTLP endpoint** and **API key** - find these in Kibana under Management -> Fleet -> Agent Policies -> OTLP Endpoint
 
 ---
 

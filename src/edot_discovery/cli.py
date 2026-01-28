@@ -12,12 +12,8 @@ Usage:
 Designed to run in AWS CloudShell with pre-configured credentials.
 """
 
-import hashlib
-import re
-import shlex
 import subprocess
 import sys
-from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 import boto3
@@ -30,507 +26,25 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from .discovery import LogSource, discover_all_sources
+from .discovery.utils import (
+    bold,
+    cancel,
+    dim,
+    error,
+    generate_cloudformation_command,
+    generate_stack_name,
+    get_bucket_region,
+    get_default_region,
+    get_enabled_regions,
+    redact_command_for_display,
+    success,
+    validate_otlp_endpoint,
+    warning,
+)
+
 # Initialize rich console
 console = Console()
-
-# CloudFormation template URL
-CLOUDFORMATION_TEMPLATE_URL = "https://edot-cloud-forwarder.s3.amazonaws.com/v0/latest/cloudformation/s3_logs-cloudformation.yaml"
-
-# Map internal log_type to CloudFormation EdotCloudForwarderS3LogsType values
-LOG_TYPE_MAP = {
-    "vpc_flow_logs": "vpcflow",
-    "elb_access_logs": "elbaccess",
-    "cloudtrail": "cloudtrail",
-    "waf": "waf",
-}
-
-# Reverse mapping: CloudFormation log type -> internal log_type
-CF_TO_INTERNAL_LOG_TYPE = {v: k for k, v in LOG_TYPE_MAP.items()}
-
-
-@dataclass
-class ExistingForwarder:
-    """Information about an existing EDOT Cloud Forwarder stack."""
-
-    stack_name: str
-    stack_status: str  # e.g., CREATE_COMPLETE, UPDATE_COMPLETE
-    otlp_endpoint: str
-    bucket_arn: str
-    log_type: str  # CloudFormation value: vpcflow, elbaccess, cloudtrail, waf
-
-
-@dataclass
-class LogSource:
-    """Represents a discovered log source."""
-
-    log_type: str  # 'vpc_flow_logs', 'elb_access_logs', 'cloudtrail', or 'waf'
-    display_type: str  # Human-readable type
-    source_id: str  # Flow log ID, LB name, Trail name, or Web ACL name
-    resource_id: str  # VPC/Subnet/ENI ID, LB ARN, Trail ARN, or Web ACL ARN
-    destination: str  # Full S3 destination path
-    bucket_arn: str  # S3 bucket ARN (without path)
-    region: str  # AWS region
-    existing_forwarder: ExistingForwarder | None = field(default=None)
-
-
-def get_default_region() -> str:
-    """Get the default AWS region from boto3 session or environment."""
-    session = boto3.Session()
-    return session.region_name or "us-east-1"
-
-
-def get_enabled_regions(default_region: str) -> list[str]:
-    """
-    Get list of enabled AWS regions for the account.
-
-    Returns regions sorted with default_region first, then alphabetically.
-    """
-    try:
-        ec2 = boto3.client("ec2", region_name=default_region)
-        response = ec2.describe_regions(
-            Filters=[{"Name": "opt-in-status", "Values": ["opt-in-not-required", "opted-in"]}]
-        )
-        regions = [r["RegionName"] for r in response.get("Regions", [])]
-
-        # Sort alphabetically, but put default region first
-        regions.sort()
-        if default_region in regions:
-            regions.remove(default_region)
-            regions.insert(0, default_region)
-
-        return regions
-    except ClientError as e:
-        console.print(f"[yellow]Warning: Could not list regions: {e}[/yellow]")
-        # Fallback to common regions
-        return [default_region]
-    except Exception as e:
-        console.print(f"[yellow]Warning: Error listing regions: {e}[/yellow]")
-        return [default_region]
-
-
-def extract_bucket_arn(destination: str) -> str:
-    """Extract the bucket ARN from a full S3 destination."""
-    # Handle ARN format: arn:aws:s3:::bucket-name/prefix/
-    if destination.startswith("arn:aws:s3:::"):
-        bucket_part = destination.replace("arn:aws:s3:::", "")
-        bucket_name = bucket_part.split("/")[0]
-        return f"arn:aws:s3:::{bucket_name}"
-    # Handle s3:// format
-    elif destination.startswith("s3://"):
-        bucket_name = destination.replace("s3://", "").split("/")[0]
-        return f"arn:aws:s3:::{bucket_name}"
-    return destination
-
-
-def get_existing_forwarders(
-    session: boto3.Session, region: str
-) -> dict[tuple[str, str], ExistingForwarder]:
-    """
-    Find existing EDOT Cloud Forwarder stacks in the region.
-
-    Returns a dict mapping (bucket_arn, internal_log_type) to ExistingForwarder info.
-    Only returns stacks in a "healthy" state (CREATE_COMPLETE, UPDATE_COMPLETE, etc.)
-    """
-    forwarders: dict[tuple[str, str], ExistingForwarder] = {}
-
-    # Stack statuses that indicate a working forwarder
-    healthy_statuses = {
-        "CREATE_COMPLETE",
-        "UPDATE_COMPLETE",
-        "UPDATE_ROLLBACK_COMPLETE",
-        "IMPORT_COMPLETE",
-    }
-
-    try:
-        cfn = session.client("cloudformation", region_name=region)
-
-        # List all stacks (paginate manually since list_stacks doesn't have a paginator)
-        next_token: str | None = None
-        while True:
-            if next_token:
-                response = cfn.list_stacks(
-                    StackStatusFilter=list(healthy_statuses),
-                    NextToken=next_token,
-                )
-            else:
-                response = cfn.list_stacks(StackStatusFilter=list(healthy_statuses))
-
-            for stack_summary in response.get("StackSummaries", []):
-                stack_name = stack_summary.get("StackName", "")
-
-                # Only process stacks matching our naming pattern
-                if not stack_name.startswith("edot-cf-"):
-                    continue
-
-                stack_status = stack_summary.get("StackStatus", "")
-
-                try:
-                    # Get stack details to extract parameters
-                    stack_response = cfn.describe_stacks(StackName=stack_name)
-                    stacks = stack_response.get("Stacks", [])
-                    if not stacks:
-                        continue
-
-                    stack = stacks[0]
-                    params = {
-                        p["ParameterKey"]: p.get("ParameterValue", "")
-                        for p in stack.get("Parameters", [])
-                    }
-
-                    bucket_arn = params.get("S3BucketARN", "")
-                    cf_log_type = params.get("EdotCloudForwarderS3LogsType", "")
-                    otlp_endpoint = params.get("OTLPEndpoint", "")
-
-                    if not bucket_arn or not cf_log_type:
-                        continue
-
-                    # Convert CF log type to internal log type
-                    internal_log_type = CF_TO_INTERNAL_LOG_TYPE.get(cf_log_type)
-                    if not internal_log_type:
-                        continue
-
-                    forwarder = ExistingForwarder(
-                        stack_name=stack_name,
-                        stack_status=stack_status,
-                        otlp_endpoint=otlp_endpoint,
-                        bucket_arn=bucket_arn,
-                        log_type=cf_log_type,
-                    )
-
-                    forwarders[(bucket_arn, internal_log_type)] = forwarder
-
-                except ClientError as e:
-                    console.print(
-                        f"[yellow]Warning: Could not describe stack {stack_name}: {e}[/yellow]"
-                    )
-
-            next_token = response.get("NextToken")
-            if not next_token:
-                break
-
-    except ClientError as e:
-        console.print(f"[yellow]Warning: Could not list CloudFormation stacks: {e}[/yellow]")
-    except Exception as e:
-        console.print(f"[yellow]Warning: Error checking existing forwarders: {e}[/yellow]")
-
-    return forwarders
-
-
-def discover_flow_logs(session: boto3.Session, region: str) -> list[LogSource]:
-    """Discover VPC Flow Logs writing to S3."""
-    sources = []
-    try:
-        ec2 = session.client("ec2", region_name=region)
-        paginator = ec2.get_paginator("describe_flow_logs")
-
-        for page in paginator.paginate():
-            for fl in page.get("FlowLogs", []):
-                # Only include active flow logs writing to S3
-                if fl.get("LogDestinationType") == "s3" and fl.get("FlowLogStatus") == "ACTIVE":
-                    destination = fl.get("LogDestination", "")
-                    sources.append(
-                        LogSource(
-                            log_type="vpc_flow_logs",
-                            display_type="VPC Flow Logs",
-                            source_id=fl["FlowLogId"],
-                            resource_id=fl.get("ResourceId", "unknown"),
-                            destination=destination,
-                            bucket_arn=extract_bucket_arn(destination),
-                            region=region,
-                        )
-                    )
-    except ClientError as e:
-        console.print(f"[yellow]Warning: Could not describe flow logs: {e}[/yellow]")
-    except Exception as e:
-        console.print(f"[yellow]Warning: Error discovering flow logs: {e}[/yellow]")
-
-    return sources
-
-
-def discover_elb_logs(session: boto3.Session, region: str) -> list[LogSource]:
-    """Discover ELB/ALB/NLB Access Logs writing to S3."""
-    sources = []
-
-    # Discover ALB/NLB via elbv2
-    try:
-        elbv2 = session.client("elbv2", region_name=region)
-        paginator = elbv2.get_paginator("describe_load_balancers")
-
-        for page in paginator.paginate():
-            for lb in page.get("LoadBalancers", []):
-                try:
-                    attrs_response = elbv2.describe_load_balancer_attributes(
-                        LoadBalancerArn=lb["LoadBalancerArn"]
-                    )
-                    config = {a["Key"]: a["Value"] for a in attrs_response.get("Attributes", [])}
-
-                    if config.get("access_logs.s3.enabled") == "true":
-                        bucket = config.get("access_logs.s3.bucket", "")
-
-                        # Skip if bucket is empty
-                        if not bucket:
-                            console.print(
-                                f"[yellow]Warning: {lb['LoadBalancerName']} in {region} "
-                                "has access logging enabled but no S3 bucket "
-                                "configured, skipping[/yellow]"
-                            )
-                            continue
-
-                        prefix = config.get("access_logs.s3.prefix", "")
-                        destination = f"s3://{bucket}/{prefix}".rstrip("/")
-
-                        lb_type = lb.get("Type", "application").upper()
-                        sources.append(
-                            LogSource(
-                                log_type="elb_access_logs",
-                                display_type=f"{lb_type} Access Logs",
-                                source_id=lb["LoadBalancerName"],
-                                resource_id=lb["LoadBalancerArn"],
-                                destination=destination,
-                                bucket_arn=f"arn:aws:s3:::{bucket}",
-                                region=region,
-                            )
-                        )
-                except ClientError as e:
-                    console.print(
-                        f"[yellow]Warning: Could not get attributes for "
-                        f"{lb['LoadBalancerName']}: {e}[/yellow]"
-                    )
-    except ClientError as e:
-        console.print(f"[yellow]Warning: Could not describe ALB/NLB: {e}[/yellow]")
-    except Exception as e:
-        console.print(f"[yellow]Warning: Error discovering ALB/NLB logs: {e}[/yellow]")
-
-    # Discover Classic ELB via elb
-    try:
-        elb = session.client("elb", region_name=region)
-        paginator = elb.get_paginator("describe_load_balancers")
-
-        for page in paginator.paginate():
-            for lb in page.get("LoadBalancerDescriptions", []):
-                try:
-                    attrs_response = elb.describe_load_balancer_attributes(
-                        LoadBalancerName=lb["LoadBalancerName"]
-                    )
-                    access_log = attrs_response.get("LoadBalancerAttributes", {}).get(
-                        "AccessLog", {}
-                    )
-
-                    if access_log.get("Enabled"):
-                        bucket = access_log.get("S3BucketName", "")
-
-                        # Skip if bucket is empty
-                        if not bucket:
-                            console.print(
-                                f"[yellow]Warning: Classic ELB {lb['LoadBalancerName']} "
-                                f"in {region} has access logging enabled but no S3 "
-                                "bucket configured, skipping[/yellow]"
-                            )
-                            continue
-
-                        prefix = access_log.get("S3BucketPrefix", "")
-                        destination = f"s3://{bucket}/{prefix}".rstrip("/")
-
-                        sources.append(
-                            LogSource(
-                                log_type="elb_access_logs",
-                                display_type="Classic ELB Access Logs",
-                                source_id=lb["LoadBalancerName"],
-                                resource_id=lb["LoadBalancerName"],
-                                destination=destination,
-                                bucket_arn=f"arn:aws:s3:::{bucket}",
-                                region=region,
-                            )
-                        )
-                except ClientError as e:
-                    console.print(
-                        f"[yellow]Warning: Could not get attributes for Classic ELB "
-                        f"{lb['LoadBalancerName']}: {e}[/yellow]"
-                    )
-    except ClientError as e:
-        # Classic ELB API may not be available in all regions
-        if "is not supported in this region" not in str(e):
-            console.print(f"[yellow]Warning: Could not describe Classic ELB: {e}[/yellow]")
-    except Exception as e:
-        console.print(f"[yellow]Warning: Error discovering Classic ELB logs: {e}[/yellow]")
-
-    return sources
-
-
-def discover_cloudtrail(session: boto3.Session, region: str) -> list[LogSource]:
-    """Discover CloudTrail trails writing to S3."""
-    sources = []
-    try:
-        cloudtrail = session.client("cloudtrail", region_name=region)
-
-        # Get all trails (including organization trails)
-        response = cloudtrail.describe_trails(includeShadowTrails=False)
-
-        for trail in response.get("trailList", []):
-            # Only include trails that have S3 bucket configured
-            bucket_name = trail.get("S3BucketName")
-            if not bucket_name:
-                continue
-
-            # Check if this trail's home region matches our scan region
-            # (trails can be multi-region but have a home region)
-            trail_home_region = trail.get("HomeRegion", region)
-            if trail_home_region != region:
-                continue
-
-            trail_name = trail.get("Name", "unknown")
-            trail_arn = trail.get("TrailARN", "")
-            s3_prefix = trail.get("S3KeyPrefix", "")
-
-            # Build destination path
-            if s3_prefix:
-                destination = f"s3://{bucket_name}/{s3_prefix}"
-            else:
-                destination = f"s3://{bucket_name}"
-
-            # Determine trail type for display
-            is_org_trail = trail.get("IsOrganizationTrail", False)
-            is_multi_region = trail.get("IsMultiRegionTrail", False)
-
-            display_parts = ["CloudTrail"]
-            if is_org_trail:
-                display_parts.append("(Organization)")
-            elif is_multi_region:
-                display_parts.append("(Multi-Region)")
-
-            sources.append(
-                LogSource(
-                    log_type="cloudtrail",
-                    display_type=" ".join(display_parts),
-                    source_id=trail_name,
-                    resource_id=trail_arn,
-                    destination=destination,
-                    bucket_arn=f"arn:aws:s3:::{bucket_name}",
-                    region=region,
-                )
-            )
-    except ClientError as e:
-        console.print(f"[yellow]Warning: Could not describe CloudTrail trails: {e}[/yellow]")
-    except Exception as e:
-        console.print(f"[yellow]Warning: Error discovering CloudTrail: {e}[/yellow]")
-
-    return sources
-
-
-def discover_waf_logs(session: boto3.Session, region: str) -> list[LogSource]:
-    """Discover AWS WAF Web ACLs with logging to S3."""
-    sources = []
-
-    # WAFv2 has two scopes: REGIONAL and CLOUDFRONT
-    # CLOUDFRONT scope is only available in us-east-1
-    scopes = ["REGIONAL"]
-    if region == "us-east-1":
-        scopes.append("CLOUDFRONT")
-
-    # Create wafv2 client once outside the loop
-    wafv2 = session.client("wafv2", region_name=region)
-
-    for scope in scopes:
-        try:
-            # List all Web ACLs for this scope using manual pagination
-            # (list_web_acls doesn't support boto3 paginators)
-            next_marker: str | None = None
-            while True:
-                if next_marker:
-                    response = wafv2.list_web_acls(Scope=scope, NextMarker=next_marker)
-                else:
-                    response = wafv2.list_web_acls(Scope=scope)
-
-                for acl in response.get("WebACLs", []):
-                    acl_arn = acl.get("ARN", "")
-                    acl_name = acl.get("Name", "unknown")
-
-                    try:
-                        # Get logging configuration for this Web ACL
-                        logging_config = wafv2.get_logging_configuration(ResourceArn=acl_arn)
-
-                        log_destinations = logging_config.get("LoggingConfiguration", {}).get(
-                            "LogDestinationConfigs", []
-                        )
-
-                        for dest_arn in log_destinations:
-                            # Only include S3 destinations
-                            # S3 ARN format: arn:aws:s3:::bucket-name
-                            if dest_arn.startswith("arn:aws:s3:::"):
-                                bucket_name = dest_arn.replace("arn:aws:s3:::", "")
-
-                                # Determine display type based on scope
-                                if scope == "CLOUDFRONT":
-                                    display_type = "WAF (CloudFront)"
-                                else:
-                                    display_type = "WAF (Regional)"
-
-                                sources.append(
-                                    LogSource(
-                                        log_type="waf",
-                                        display_type=display_type,
-                                        source_id=acl_name,
-                                        resource_id=acl_arn,
-                                        destination=f"s3://{bucket_name}",
-                                        bucket_arn=dest_arn,
-                                        region=region,
-                                    )
-                                )
-                    except ClientError as e:
-                        # WAFNonexistentItemException means no logging configured
-                        if "WAFNonexistentItemException" not in str(e):
-                            console.print(
-                                f"[yellow]Warning: Could not get logging config "
-                                f"for {acl_name}: {e}[/yellow]"
-                            )
-
-                # Check for more results
-                next_marker = response.get("NextMarker")
-                if not next_marker:
-                    break
-        except ClientError as e:
-            console.print(f"[yellow]Warning: Could not list WAF Web ACLs ({scope}): {e}[/yellow]")
-        except Exception as e:
-            console.print(f"[yellow]Warning: Error discovering WAF logs ({scope}): {e}[/yellow]")
-
-    return sources
-
-
-def discover_all_sources(region: str) -> list[LogSource]:
-    """Discover all log sources in the specified region."""
-    session = boto3.Session(region_name=region)
-    all_sources: list[LogSource] = []
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-        transient=True,
-    ) as progress:
-        task = progress.add_task("Discovering log sources...", total=None)
-
-        progress.update(task, description="Scanning VPC Flow Logs...")
-        all_sources.extend(discover_flow_logs(session, region))
-
-        progress.update(task, description="Scanning ELB Access Logs...")
-        all_sources.extend(discover_elb_logs(session, region))
-
-        progress.update(task, description="Scanning CloudTrail trails...")
-        all_sources.extend(discover_cloudtrail(session, region))
-
-        progress.update(task, description="Scanning WAF Web ACLs...")
-        all_sources.extend(discover_waf_logs(session, region))
-
-        progress.update(task, description="Checking existing EDOT forwarders...")
-        existing_forwarders = get_existing_forwarders(session, region)
-
-    # Annotate sources with existing forwarder info
-    for source in all_sources:
-        key = (source.bucket_arn, source.log_type)
-        if key in existing_forwarders:
-            source.existing_forwarder = existing_forwarders[key]
-
-    return all_sources
 
 
 def display_results_table(sources: list[LogSource]) -> None:
@@ -557,8 +71,6 @@ def display_results_table(sources: list[LogSource]) -> None:
             # Extract host from OTLP endpoint for brevity
             endpoint = source.existing_forwarder.otlp_endpoint
             try:
-                from urllib.parse import urlparse
-
                 host = urlparse(endpoint).netloc or endpoint
             except Exception:
                 host = endpoint
@@ -591,7 +103,7 @@ def _build_choice_label(source: LogSource) -> str:
     return label
 
 
-def build_selection_choices(sources: list[LogSource]) -> list:
+def build_selection_choices(sources: list[LogSource]) -> list[Choice | Separator]:
     """Build grouped choices for questionary checkbox."""
     choices: list[Choice | Separator] = []
 
@@ -618,128 +130,65 @@ def build_selection_choices(sources: list[LogSource]) -> list:
     return choices
 
 
-def generate_stack_name(bucket_arn: str, log_type: str) -> str:
-    """
-    Generate a deterministic, idempotent CloudFormation stack name.
-
-    Stack names must:
-    - Start with a letter
-    - Contain only alphanumeric characters and hyphens
-    - Be <= 128 characters
-    """
-    # Extract bucket name from ARN
-    bucket_name = bucket_arn.replace("arn:aws:s3:::", "")
-
-    # Create base name
-    cf_log_type = LOG_TYPE_MAP.get(log_type, log_type)
-    base_name = f"edot-cf-{cf_log_type}-{bucket_name}"
-
-    # Sanitize: keep only alphanumeric and hyphens, ensure starts with letter
-    sanitized = re.sub(r"[^a-zA-Z0-9-]", "-", base_name)
-    sanitized = re.sub(r"-+", "-", sanitized)  # Collapse multiple hyphens
-    sanitized = sanitized.strip("-")
-
-    # Ensure starts with a letter
-    if not sanitized[0].isalpha():
-        sanitized = "s-" + sanitized
-
-    # If too long, truncate and add hash for uniqueness
-    max_len = 128
-    if len(sanitized) > max_len:
-        # Create a short hash of the full identifier
-        full_id = f"{bucket_arn}-{log_type}"
-        hash_suffix = hashlib.sha256(full_id.encode()).hexdigest()[:8]
-        # Truncate base and append hash
-        truncate_len = max_len - len(hash_suffix) - 1  # -1 for hyphen
-        sanitized = sanitized[:truncate_len].rstrip("-") + "-" + hash_suffix
-
-    return sanitized
-
-
-def generate_cloudformation_command(
-    stack_name: str,
-    log_type: str,
-    bucket_arn: str,
-    otlp_endpoint: str,
-    api_key: str,
-    region: str,
-) -> list[str]:
-    """
-    Generate a CloudFormation create-stack command as an argv list.
-
-    Returns a list suitable for subprocess.run with shell=False.
-    """
-    # Map to CloudFormation expected log type value
-    cf_log_type = LOG_TYPE_MAP.get(log_type, log_type)
-
-    return [
-        "aws",
-        "cloudformation",
-        "create-stack",
-        "--stack-name",
-        stack_name,
-        "--template-url",
-        CLOUDFORMATION_TEMPLATE_URL,
-        "--capabilities",
-        "CAPABILITY_NAMED_IAM",
-        "CAPABILITY_AUTO_EXPAND",
-        "--region",
-        region,
-        "--parameters",
-        f"ParameterKey=OTLPEndpoint,ParameterValue={otlp_endpoint}",
-        f"ParameterKey=ElasticAPIKey,ParameterValue={api_key}",
-        f"ParameterKey=EdotCloudForwarderS3LogsType,ParameterValue={cf_log_type}",
-        f"ParameterKey=SourceS3BucketARN,ParameterValue={bucket_arn}",
-    ]
-
-
-def redact_command_for_display(cmd: list[str]) -> str:
-    """
-    Convert command list to display string with sensitive values redacted.
-
-    Redacts:
-    - ElasticAPIKey parameter values
-    - Common API key patterns
-    """
-    redacted_parts = []
-    for part in cmd:
-        # Redact ElasticAPIKey parameter
-        if part.startswith("ParameterKey=ElasticAPIKey,ParameterValue="):
-            redacted_parts.append("ParameterKey=ElasticAPIKey,ParameterValue=<REDACTED>")
-        # Redact common API key patterns
-        elif re.match(r"^(API_KEY|APIKEY|api_key|apikey)=", part):
-            key_name = part.split("=")[0]
-            redacted_parts.append(f"{key_name}=<REDACTED>")
-        else:
-            redacted_parts.append(part)
-
-    return shlex.join(redacted_parts)
-
-
 def generate_deployment_commands(
     selected_sources: list[LogSource],
     otlp_endpoint: str,
     api_key: str,
+    session: boto3.Session | None = None,
 ) -> list[tuple[str, str, str, list[str]]]:
     """
     Generate CloudFormation deployment commands for selected sources.
 
-    Returns list of tuples: (display_name, bucket_arn, log_type, command_list)
+    Args:
+        selected_sources: List of LogSource objects to generate commands for
+        otlp_endpoint: OTLP endpoint URL for Elastic Cloud
+        api_key: Elastic API key
+        session: Optional boto3 Session. If not provided, creates a new session.
+
+    Returns:
+        List of tuples: (display_name, bucket_arn, log_type, command_list)
 
     Note: One stack per unique bucket+log_type combination.
+    Uses the bucket's actual region (not the resource region) for deployment.
     """
-    commands = []
+    if session is None:
+        session = boto3.Session()
 
-    # Group sources by (bucket_arn, log_type, region)
-    buckets_by_type: dict[tuple[str, str, str], list[LogSource]] = {}
+    commands: list[tuple[str, str, str, list[str]]] = []
+
+    # Group sources by (bucket_arn, log_type) - we'll determine bucket region separately
+    buckets_by_type: dict[tuple[str, str], list[LogSource]] = {}
     for source in selected_sources:
-        key = (source.bucket_arn, source.log_type, source.region)
+        key = (source.bucket_arn, source.log_type)
         if key not in buckets_by_type:
             buckets_by_type[key] = []
         buckets_by_type[key].append(source)
 
-    # Generate one command per unique bucket+type+region
-    for (bucket_arn, log_type, region), _sources in buckets_by_type.items():
+    # Generate one command per unique bucket+type, using bucket's actual region
+    for (bucket_arn, log_type), sources in buckets_by_type.items():
+        # Get the bucket's actual region
+        bucket_region = get_bucket_region(bucket_arn, session)
+
+        if bucket_region is None:
+            # Fallback to first source's region if we can't determine bucket region
+            bucket_region = sources[0].region
+            warning(
+                f"Using resource region {bucket_region} for bucket {bucket_arn} "
+                "(could not determine bucket region). This may cause deployment issues if the "
+                "bucket is in a different region."
+            )
+        else:
+            # Check if any sources have a different region than the bucket
+            # This is valid - services can write cross-region, but notifications require same-region
+            resource_regions = {s.region for s in sources}
+            if bucket_region not in resource_regions:
+                warning(
+                    f"Note: Bucket {bucket_arn} is in {bucket_region}, but resources "
+                    f"are in {', '.join(resource_regions)}. This is valid - services can write "
+                    f"cross-region, but deploying stack in bucket region {bucket_region} "
+                    f"(required for S3 notifications)."
+                )
+
         # Generate deterministic stack name
         stack_name = generate_stack_name(bucket_arn, log_type)
 
@@ -759,7 +208,7 @@ def generate_deployment_commands(
             bucket_arn=bucket_arn,
             otlp_endpoint=otlp_endpoint,
             api_key=api_key,
-            region=region,
+            region=bucket_region,
         )
 
         commands.append((display_name, bucket_arn, log_type, cmd))
@@ -787,40 +236,7 @@ def execute_deployment(command: list[str]) -> tuple[bool, str]:
         return False, str(e)
 
 
-def validate_otlp_endpoint(endpoint: str | None) -> bool:
-    """
-    Validate OTLP endpoint format.
-
-    Requirements:
-    - Must be a valid URL
-    - Must use HTTPS scheme
-    - Must have a non-empty host with at least one dot (domain) or be localhost
-    """
-    if not endpoint:
-        return False
-
-    try:
-        parsed = urlparse(endpoint)
-    except Exception:
-        return False
-
-    # Must be HTTPS
-    if parsed.scheme != "https":
-        return False
-
-    # Must have a host
-    if not parsed.netloc:
-        return False
-
-    # Host must be a valid domain (contains dot) or localhost
-    host = parsed.netloc.split(":")[0]  # Remove port if present
-    if "." not in host and host != "localhost":
-        return False
-
-    return True
-
-
-def main():
+def main() -> None:
     """Main entry point for the discovery tool."""
     console.print(
         Panel.fit(
@@ -835,16 +251,16 @@ def main():
     try:
         sts = boto3.client("sts")
         identity = sts.get_caller_identity()
-        console.print(f"[green]AWS Account:[/green] {identity['Account']}")
-        console.print(f"[green]Caller ARN:[/green] {identity['Arn']}")
+        success(f"AWS Account: {identity['Account']}")
+        success(f"Caller ARN: {identity['Arn']}")
     except NoCredentialsError:
-        console.print(
-            "[red]Error: No AWS credentials found.[/red]\n"
+        error(
+            "Error: No AWS credentials found.\n"
             "Please configure AWS credentials or run this tool in AWS CloudShell."
         )
         sys.exit(1)
     except ClientError as e:
-        console.print(f"[red]Error verifying AWS credentials: {e}[/red]")
+        error(f"Error verifying AWS credentials: {e}")
         sys.exit(1)
 
     console.print()
@@ -862,7 +278,7 @@ def main():
         regions = get_enabled_regions(default_region)
 
     # Build region choices with current region marked
-    region_choices = []
+    region_choices: list[Choice] = []
     for r in regions:
         if r == default_region:
             region_choices.append(Choice(title=f"{r} (current)", value=r))
@@ -875,13 +291,13 @@ def main():
     ).ask()
 
     if not region:
-        console.print("[yellow]Operation cancelled.[/yellow]")
+        cancel("Operation cancelled.")
         sys.exit(0)
 
     console.print()
 
     # Discover log sources
-    console.print(f"[bold]Scanning region {region} for log sources...[/bold]")
+    bold(f"Scanning region {region} for log sources...")
     sources = discover_all_sources(region)
 
     console.print()
@@ -889,7 +305,7 @@ def main():
     if not sources:
         console.print(
             Panel(
-                "[yellow]No S3-backed log sources found in this region.[/yellow]\n\n"
+                "No S3-backed log sources found in this region.\n\n"
                 "EDOT Cloud Forwarder currently supports:\n"
                 "  - VPC Flow Logs writing to S3\n"
                 "  - ELB/ALB/NLB Access Logs writing to S3\n"
@@ -916,14 +332,14 @@ def main():
     # Count already-configured sources for messaging
     already_configured = sum(1 for s in sources if s.existing_forwarder)
     if already_configured > 0:
-        console.print(
-            f"[dim]Sources not yet configured are pre-selected. "
-            f"{already_configured} source(s) already have forwarders (marked [CONFIGURED]).[/dim]"
+        dim(
+            f"Sources not yet configured are pre-selected. "
+            f"{already_configured} source(s) already have forwarders (marked [CONFIGURED])."
         )
     else:
-        console.print(
-            "[dim]All sources are pre-selected. Use arrow keys to navigate, "
-            "Space to toggle, Enter to confirm.[/dim]"
+        dim(
+            "All sources are pre-selected. Use arrow keys to navigate, "
+            "Space to toggle, Enter to confirm."
         )
 
     selected: list[LogSource] = questionary.checkbox(
@@ -932,7 +348,7 @@ def main():
     ).ask()
 
     if not selected:
-        console.print("[yellow]No sources selected. Exiting.[/yellow]")
+        warning("No sources selected. Exiting.")
         sys.exit(0)
 
     console.print()
@@ -942,20 +358,17 @@ def main():
     skipped_sources = [s for s in selected if s.existing_forwarder is not None]
 
     if skipped_sources:
-        console.print(
-            f"[yellow]Skipping {len(skipped_sources)} already-configured source(s):[/yellow]"
-        )
+        warning(f"Skipping {len(skipped_sources)} already-configured source(s):")
         for s in skipped_sources:
-            console.print(f"  [dim]- {s.source_id} ({s.existing_forwarder.stack_name})[/dim]")  # type: ignore[union-attr]
+            stack_name = s.existing_forwarder.stack_name  # type: ignore[union-attr]
+            dim(f"  - {s.source_id} ({stack_name})")
         console.print()
 
     if not new_sources:
-        console.print(
-            "[yellow]All selected sources are already configured. Nothing to deploy.[/yellow]"
-        )
+        warning("All selected sources are already configured. Nothing to deploy.")
         sys.exit(0)
 
-    console.print(f"[green]Selected {len(new_sources)} new source(s) for onboarding.[/green]")
+    success(f"Selected {len(new_sources)} new source(s) for onboarding.")
     console.print()
 
     # Collect Elastic Cloud configuration
@@ -975,7 +388,7 @@ def main():
     ).ask()
 
     if not otlp_endpoint:
-        console.print("[yellow]Operation cancelled.[/yellow]")
+        cancel("Operation cancelled.")
         sys.exit(0)
 
     api_key = questionary.password(
@@ -984,7 +397,7 @@ def main():
     ).ask()
 
     if not api_key:
-        console.print("[yellow]Operation cancelled.[/yellow]")
+        cancel("Operation cancelled.")
         sys.exit(0)
 
     console.print()
@@ -995,7 +408,7 @@ def main():
     # Display dry-run preview
     console.print(
         Panel(
-            "[bold]Review the CloudFormation commands below before execution.[/bold]\n"
+            "Review the CloudFormation commands below before execution.\n"
             "One stack will be created per unique S3 bucket and log type combination.",
             title="Dry Run Preview",
             border_style="yellow",
@@ -1005,10 +418,10 @@ def main():
 
     for i, (display_name, bucket_arn, _log_type, cmd) in enumerate(commands, 1):
         console.print(f"[bold cyan]Stack {i}: {display_name}[/bold cyan]")
-        console.print(f"[green]Bucket:[/green] {bucket_arn}")
+        success(f"Bucket: {bucket_arn}")
         # Display redacted command
         redacted_cmd = redact_command_for_display(cmd)
-        console.print(f"[dim]{redacted_cmd}[/dim]")
+        dim(redacted_cmd)
         console.print()
 
     # Confirm execution
@@ -1019,16 +432,16 @@ def main():
 
     if not execute:
         console.print()
-        console.print(
-            "[yellow]Deployment cancelled. Commands have been printed above - "
-            "copy and run manually when ready.[/yellow]"
+        warning(
+            "Deployment cancelled. Commands have been printed above - "
+            "copy and run manually when ready."
         )
         sys.exit(0)
 
     console.print()
 
     # Execute deployments
-    results = []
+    results: list[tuple[str, str, bool, str]] = []
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -1036,28 +449,26 @@ def main():
     ) as progress:
         for display_name, bucket_arn, _log_type, cmd in commands:
             task = progress.add_task(f"Deploying {display_name}...", total=None)
-            success, output = execute_deployment(cmd)
+            deployment_success, output = execute_deployment(cmd)
             progress.remove_task(task)
 
-            if success:
-                console.print(
-                    f"[green]Stack creation initiated for {display_name} ({bucket_arn})[/green]"
-                )
+            if deployment_success:
+                success(f"Stack creation initiated for {display_name} ({bucket_arn})")
             else:
-                console.print(f"[red]Failed to create stack for {display_name}: {output}[/red]")
+                error(f"Failed to create stack for {display_name}: {output}")
 
-            results.append((display_name, bucket_arn, success, output))
+            results.append((display_name, bucket_arn, deployment_success, output))
 
     console.print()
 
     # Summary
-    successful = sum(1 for _, _, success, _ in results if success)
+    successful = sum(1 for _, _, deployment_success, _ in results if deployment_success)
     failed = len(results) - successful
 
     if failed == 0:
         console.print(
             Panel(
-                f"[green]All {successful} stack(s) initiated successfully![/green]\n\n"
+                f"All {successful} stack(s) initiated successfully!\n\n"
                 "Monitor stack creation progress:\n"
                 f"  aws cloudformation list-stacks --region {region} "
                 "--stack-status-filter CREATE_IN_PROGRESS CREATE_COMPLETE\n\n"
@@ -1070,7 +481,7 @@ def main():
     else:
         console.print(
             Panel(
-                f"[yellow]{successful} stack(s) initiated, {failed} failed.[/yellow]\n\n"
+                f"{successful} stack(s) initiated, {failed} failed.\n\n"
                 "Review the errors above and retry failed deployments manually.",
                 title="Deployment Partially Complete",
                 border_style="yellow",
@@ -1082,8 +493,8 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        console.print("\n[yellow]Operation cancelled by user.[/yellow]")
+        cancel("\nOperation cancelled by user.")
         sys.exit(130)
     except Exception as e:
-        console.print(f"\n[red]Unexpected error: {e}[/red]")
+        error(f"\nUnexpected error: {e}")
         sys.exit(1)

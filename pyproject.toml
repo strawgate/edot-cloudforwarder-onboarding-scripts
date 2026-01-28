@@ -36,7 +36,7 @@ dev = [
     "pytest-cov>=4.0.0",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
-    "boto3-stubs[ec2,elbv2,elb,sts,cloudtrail,wafv2,cloudformation]>=1.35.0",
+    "boto3-stubs[ec2,elbv2,elb,sts,cloudtrail,wafv2,cloudformation,s3]>=1.35.0",
 ]
 
 [project.scripts]
@@ -107,5 +107,6 @@ exclude_lines = [
 
 [dependency-groups]
 dev = [
-    "ruff>=0.14.14",
+    "basedpyright>=1.37.2",
+    "ruff>=0.4.0",
 ]

@@ -1,10 +1,18 @@
 """Tests for the CLI module."""
 
-from edot_discovery.cli import (
+from unittest.mock import MagicMock, patch
+
+import pytest
+from botocore.exceptions import ClientError
+
+from edot_discovery.cli import generate_deployment_commands
+from edot_discovery.discovery.types import LogSource
+from edot_discovery.discovery.utils import (
     LOG_TYPE_MAP,
     extract_bucket_arn,
     generate_cloudformation_command,
     generate_stack_name,
+    get_bucket_region,
     redact_command_for_display,
     validate_otlp_endpoint,
 )
@@ -238,3 +246,366 @@ class TestLogTypeMap:
     def test_cloudtrail_mapping(self):
         """Test CloudTrail mapping."""
         assert LOG_TYPE_MAP["cloudtrail"] == "cloudtrail"
+
+    def test_waf_mapping(self):
+        """Test WAF mapping."""
+        assert LOG_TYPE_MAP["waf"] == "waf"
+
+
+class TestGetBucketRegion:
+    """Tests for get_bucket_region function."""
+
+    def test_standard_region(self):
+        """Test getting bucket region for a standard region."""
+        bucket_arn = "arn:aws:s3:::my-bucket"
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+        mock_s3_client.get_bucket_location.return_value = {"LocationConstraint": "us-west-2"}
+
+        result = get_bucket_region(bucket_arn, mock_session)
+
+        assert result == "us-west-2"
+        mock_s3_client.get_bucket_location.assert_called_once_with(Bucket="my-bucket")
+
+    def test_us_east_1_returns_none(self):
+        """Test that us-east-1 returns None from API and is handled correctly."""
+        bucket_arn = "arn:aws:s3:::my-bucket"
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+        # us-east-1 returns None for LocationConstraint
+        mock_s3_client.get_bucket_location.return_value = {"LocationConstraint": None}
+
+        result = get_bucket_region(bucket_arn, mock_session)
+
+        assert result == "us-east-1"
+
+    def test_empty_location_constraint_handled(self):
+        """Test that empty location constraint is handled as us-east-1."""
+        bucket_arn = "arn:aws:s3:::my-bucket"
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+        mock_s3_client.get_bucket_location.return_value = {}
+
+        result = get_bucket_region(bucket_arn, mock_session)
+
+        assert result == "us-east-1"
+
+    def test_client_error_returns_none(self):
+        """Test that ClientError returns None."""
+        bucket_arn = "arn:aws:s3:::my-bucket"
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+        mock_s3_client.get_bucket_location.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchBucket", "Message": "Bucket not found"}}, "GetBucketLocation"
+        )
+
+        result = get_bucket_region(bucket_arn, mock_session)
+
+        assert result is None
+
+    def test_generic_exception_returns_none(self):
+        """Test that generic exceptions return None."""
+        bucket_arn = "arn:aws:s3:::my-bucket"
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+        mock_s3_client.get_bucket_location.side_effect = Exception("Unexpected error")
+
+        result = get_bucket_region(bucket_arn, mock_session)
+
+        assert result is None
+
+    def test_creates_session_if_none_provided(self):
+        """Test that function creates a session if none is provided."""
+        bucket_arn = "arn:aws:s3:::my-bucket"
+        with patch("edot_discovery.discovery.utils.boto3.Session") as mock_session_class:
+            mock_session = MagicMock()
+            mock_s3_client = MagicMock()
+            mock_session_class.return_value = mock_session
+            mock_session.client.return_value = mock_s3_client
+            mock_s3_client.get_bucket_location.return_value = {"LocationConstraint": "eu-west-1"}
+
+            result = get_bucket_region(bucket_arn)
+
+            assert result == "eu-west-1"
+            mock_session_class.assert_called_once()
+
+    def test_extracts_bucket_name_from_arn(self):
+        """Test that bucket name is correctly extracted from ARN."""
+        bucket_arn = "arn:aws:s3:::my-complex-bucket-name"
+        mock_session = MagicMock()
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+        mock_s3_client.get_bucket_location.return_value = {"LocationConstraint": "ap-southeast-1"}
+
+        result = get_bucket_region(bucket_arn, mock_session)
+
+        assert result == "ap-southeast-1"
+        mock_s3_client.get_bucket_location.assert_called_once_with(Bucket="my-complex-bucket-name")
+
+
+class TestGenerateDeploymentCommands:
+    """Tests for generate_deployment_commands function."""
+
+    @pytest.fixture
+    def sample_source_same_region(self):
+        """Sample LogSource with bucket in same region as resource."""
+        return LogSource(
+            log_type="vpc_flow_logs",
+            display_type="VPC Flow Logs",
+            source_id="fl-123",
+            resource_id="vpc-abc",
+            destination="s3://my-bucket/logs/",
+            bucket_arn="arn:aws:s3:::my-bucket",
+            region="us-east-1",
+        )
+
+    @pytest.fixture
+    def sample_source_cross_region(self):
+        """Sample LogSource with bucket in different region than resource."""
+        return LogSource(
+            log_type="elb_access_logs",
+            display_type="ALB Access Logs",
+            source_id="my-alb",
+            resource_id="arn:aws:elasticloadbalancing:us-west-2:123:loadbalancer/app/my-alb/abc",
+            destination="s3://my-bucket/alb/",
+            bucket_arn="arn:aws:s3:::my-bucket",
+            region="us-west-2",  # Resource in us-west-2
+        )
+
+    @pytest.fixture
+    def mock_session(self):
+        """Mock boto3 session."""
+        return MagicMock()
+
+    def test_same_region_deployment(self, sample_source_same_region, mock_session):
+        """Test deployment when bucket and resource are in same region."""
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+        # Bucket is in us-east-1 (same as resource)
+        mock_s3_client.get_bucket_location.return_value = {"LocationConstraint": None}
+
+        commands = generate_deployment_commands(
+            [sample_source_same_region], "https://example.com", "test-api-key", mock_session
+        )
+
+        assert len(commands) == 1
+        display_name, bucket_arn, log_type, cmd = commands[0]
+        assert display_name == "VPC Flow Logs"
+        assert bucket_arn == "arn:aws:s3:::my-bucket"
+        assert log_type == "vpc_flow_logs"
+        # Check that region is us-east-1 (bucket region, not resource region)
+        assert "--region" in cmd
+        region_idx = cmd.index("--region")
+        assert cmd[region_idx + 1] == "us-east-1"
+
+    def test_cross_region_deployment(self, sample_source_cross_region, mock_session):
+        """Test deployment when bucket and resource are in different regions."""
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+        # Bucket is in us-east-1, resource is in us-west-2
+        mock_s3_client.get_bucket_location.return_value = {"LocationConstraint": None}
+
+        commands = generate_deployment_commands(
+            [sample_source_cross_region], "https://example.com", "test-api-key", mock_session
+        )
+
+        assert len(commands) == 1
+        display_name, bucket_arn, log_type, cmd = commands[0]
+        # Should deploy in bucket region (us-east-1), not resource region (us-west-2)
+        assert "--region" in cmd
+        region_idx = cmd.index("--region")
+        assert cmd[region_idx + 1] == "us-east-1"
+
+    def test_multiple_sources_same_bucket(self, mock_session):
+        """Test grouping multiple sources with same bucket."""
+        source1 = LogSource(
+            log_type="vpc_flow_logs",
+            display_type="VPC Flow Logs",
+            source_id="fl-1",
+            resource_id="vpc-1",
+            destination="s3://my-bucket/vpc/",
+            bucket_arn="arn:aws:s3:::my-bucket",
+            region="us-east-1",
+        )
+        source2 = LogSource(
+            log_type="vpc_flow_logs",
+            display_type="VPC Flow Logs",
+            source_id="fl-2",
+            resource_id="vpc-2",
+            destination="s3://my-bucket/vpc/",
+            bucket_arn="arn:aws:s3:::my-bucket",
+            region="us-west-2",
+        )
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+        mock_s3_client.get_bucket_location.return_value = {"LocationConstraint": "eu-west-1"}
+
+        commands = generate_deployment_commands(
+            [source1, source2], "https://example.com", "test-api-key", mock_session
+        )
+
+        # Should generate only one command for same bucket+log_type
+        assert len(commands) == 1
+        # Should use bucket region (eu-west-1), not resource regions
+        _, _, _, cmd = commands[0]
+        assert "--region" in cmd
+        region_idx = cmd.index("--region")
+        assert cmd[region_idx + 1] == "eu-west-1"
+
+    def test_different_buckets_generate_separate_commands(self, mock_session):
+        """Test that different buckets generate separate commands."""
+        source1 = LogSource(
+            log_type="vpc_flow_logs",
+            display_type="VPC Flow Logs",
+            source_id="fl-1",
+            resource_id="vpc-1",
+            destination="s3://bucket-1/vpc/",
+            bucket_arn="arn:aws:s3:::bucket-1",
+            region="us-east-1",
+        )
+        source2 = LogSource(
+            log_type="vpc_flow_logs",
+            display_type="VPC Flow Logs",
+            source_id="fl-2",
+            resource_id="vpc-2",
+            destination="s3://bucket-2/vpc/",
+            bucket_arn="arn:aws:s3:::bucket-2",
+            region="us-east-1",
+        )
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+        # First bucket in us-east-1, second in us-west-2
+        mock_s3_client.get_bucket_location.side_effect = [
+            {"LocationConstraint": None},  # bucket-1 -> us-east-1
+            {"LocationConstraint": "us-west-2"},  # bucket-2 -> us-west-2
+        ]
+
+        commands = generate_deployment_commands(
+            [source1, source2], "https://example.com", "test-api-key", mock_session
+        )
+
+        assert len(commands) == 2
+        # Check first command uses bucket-1 region
+        _, bucket_arn1, _, cmd1 = commands[0]
+        assert bucket_arn1 == "arn:aws:s3:::bucket-1"
+        assert "--region" in cmd1
+        region_idx1 = cmd1.index("--region")
+        assert cmd1[region_idx1 + 1] == "us-east-1"
+
+        # Check second command uses bucket-2 region
+        _, bucket_arn2, _, cmd2 = commands[1]
+        assert bucket_arn2 == "arn:aws:s3:::bucket-2"
+        assert "--region" in cmd2
+        region_idx2 = cmd2.index("--region")
+        assert cmd2[region_idx2 + 1] == "us-west-2"
+
+    def test_different_log_types_generate_separate_commands(self, mock_session):
+        """Test that different log types for same bucket generate separate commands."""
+        source1 = LogSource(
+            log_type="vpc_flow_logs",
+            display_type="VPC Flow Logs",
+            source_id="fl-1",
+            resource_id="vpc-1",
+            destination="s3://my-bucket/vpc/",
+            bucket_arn="arn:aws:s3:::my-bucket",
+            region="us-east-1",
+        )
+        source2 = LogSource(
+            log_type="elb_access_logs",
+            display_type="ELB Access Logs",
+            source_id="alb-1",
+            resource_id="arn:aws:elasticloadbalancing:us-east-1:123:loadbalancer/app/alb/abc",
+            destination="s3://my-bucket/alb/",
+            bucket_arn="arn:aws:s3:::my-bucket",
+            region="us-east-1",
+        )
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+        mock_s3_client.get_bucket_location.return_value = {"LocationConstraint": None}
+
+        commands = generate_deployment_commands(
+            [source1, source2], "https://example.com", "test-api-key", mock_session
+        )
+
+        assert len(commands) == 2
+        log_types = {log_type for _, _, log_type, _ in commands}
+        assert "vpc_flow_logs" in log_types
+        assert "elb_access_logs" in log_types
+
+    def test_fallback_to_resource_region_on_error(self, mock_session):
+        """Test that function falls back to resource region when bucket region unavailable."""
+        source = LogSource(
+            log_type="vpc_flow_logs",
+            display_type="VPC Flow Logs",
+            source_id="fl-1",
+            resource_id="vpc-1",
+            destination="s3://my-bucket/vpc/",
+            bucket_arn="arn:aws:s3:::my-bucket",
+            region="us-west-2",
+        )
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+        mock_s3_client.get_bucket_location.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Access denied"}}, "GetBucketLocation"
+        )
+
+        commands = generate_deployment_commands(
+            [source], "https://example.com", "test-api-key", mock_session
+        )
+
+        assert len(commands) == 1
+        _, _, _, cmd = commands[0]
+        # Should fallback to resource region
+        assert "--region" in cmd
+        region_idx = cmd.index("--region")
+        assert cmd[region_idx + 1] == "us-west-2"
+
+    def test_creates_session_if_none_provided(self, sample_source_same_region):
+        """Test that function creates a session if none is provided."""
+        with patch("edot_discovery.cli.boto3.Session") as mock_session_class:
+            mock_session = MagicMock()
+            mock_s3_client = MagicMock()
+            mock_session_class.return_value = mock_session
+            mock_session.client.return_value = mock_s3_client
+            mock_s3_client.get_bucket_location.return_value = {"LocationConstraint": "eu-west-1"}
+
+            commands = generate_deployment_commands(
+                [sample_source_same_region], "https://example.com", "test-api-key"
+            )
+
+            assert len(commands) == 1
+            mock_session_class.assert_called_once()
+
+    def test_all_log_types_have_correct_display_names(self, mock_session):
+        """Test that all log types have correct display names."""
+        log_types = [
+            ("vpc_flow_logs", "VPC Flow Logs"),
+            ("elb_access_logs", "ELB Access Logs"),
+            ("cloudtrail", "CloudTrail"),
+            ("waf", "AWS WAF"),
+        ]
+        mock_s3_client = MagicMock()
+        mock_session.client.return_value = mock_s3_client
+        mock_s3_client.get_bucket_location.return_value = {"LocationConstraint": "us-east-1"}
+
+        for log_type, expected_display in log_types:
+            source = LogSource(
+                log_type=log_type,
+                display_type=expected_display,
+                source_id="test-id",
+                resource_id="test-resource",
+                destination=f"s3://bucket-{log_type}/",
+                bucket_arn=f"arn:aws:s3:::bucket-{log_type}",
+                region="us-east-1",
+            )
+            commands = generate_deployment_commands(
+                [source], "https://example.com", "test-api-key", mock_session
+            )
+            assert len(commands) == 1
+            display_name, _, _, _ = commands[0]
+            assert display_name == expected_display
