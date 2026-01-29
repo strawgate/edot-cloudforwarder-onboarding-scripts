@@ -1,10 +1,15 @@
 """AWS WAF logs discovery."""
 
+from typing import Literal
+
 import boto3
 from botocore.exceptions import ClientError
 
-from .types import LogSource
-from .utils import warn
+from edot_discovery.discovery.types import LogSource
+from edot_discovery.discovery.utils.console import warning
+
+# WAF scope type
+ScopeType = Literal["REGIONAL", "CLOUDFRONT"]
 
 
 def discover_waf_logs(session: boto3.Session, region: str) -> list[LogSource]:
@@ -13,7 +18,7 @@ def discover_waf_logs(session: boto3.Session, region: str) -> list[LogSource]:
 
     # WAFv2 has two scopes: REGIONAL and CLOUDFRONT
     # CLOUDFRONT scope is only available in us-east-1
-    scopes = ["REGIONAL"]
+    scopes: list[ScopeType] = ["REGIONAL"]
     if region == "us-east-1":
         scopes.append("CLOUDFRONT")
 
@@ -69,15 +74,15 @@ def discover_waf_logs(session: boto3.Session, region: str) -> list[LogSource]:
                     except ClientError as e:
                         # WAFNonexistentItemException means no logging configured
                         if "WAFNonexistentItemException" not in str(e):
-                            warn(f"Could not get logging config for {acl_name}: {e}")
+                            warning(f"Could not get logging config for {acl_name}: {e}")
 
                 # Check for more results
                 next_marker = response.get("NextMarker")
                 if not next_marker:
                     break
         except ClientError as e:
-            warn(f"Could not list WAF Web ACLs ({scope}): {e}")
+            warning(f"Could not list WAF Web ACLs ({scope}): {e}")
         except Exception as e:
-            warn(f"Error discovering WAF logs ({scope}): {e}")
+            warning(f"Error discovering WAF logs ({scope}): {e}")
 
     return sources

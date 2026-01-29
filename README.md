@@ -119,12 +119,12 @@ Scanning region us-east-1 for log sources...
 │ Note: API key is shown as <REDACTED> - substitute yours │
 ╰─────────────────────────────────────────────────────────╯
 
-# Stack 1: VPC Flow Logs
-# Bucket: arn:aws:s3:::my-vpc-logs (us-east-1)
+# Stack 1 (us-east-1): VPC Flow Logs
+# Bucket: arn:aws:s3:::my-vpc-logs
 aws cloudformation create-stack --stack-name edot-cf-vpcflow-my-vpc-logs ...
 
-# Stack 2: ELB Access Logs
-# Bucket: arn:aws:s3:::my-alb-logs (us-east-1)
+# Stack 2 (us-east-1): ELB Access Logs
+# Bucket: arn:aws:s3:::my-alb-logs
 aws cloudformation create-stack --stack-name edot-cf-elbaccess-my-alb-logs ...
 
 ? Execute 2 CloudFormation deployment(s)? Yes

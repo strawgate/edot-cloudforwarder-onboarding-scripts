@@ -1,10 +1,12 @@
 """Existing EDOT Cloud Forwarder stack detection."""
 
+from typing import Literal
+
 import boto3
 from botocore.exceptions import ClientError
 
-from .types import ExistingForwarder
-from .utils import warn
+from edot_discovery.discovery.types import ExistingForwarder
+from edot_discovery.discovery.utils.console import warning
 
 # Reverse mapping: CloudFormation log type -> internal log_type
 CF_TO_INTERNAL_LOG_TYPE = {
@@ -13,6 +15,14 @@ CF_TO_INTERNAL_LOG_TYPE = {
     "cloudtrail": "cloudtrail",
     "waf": "waf",
 }
+
+# Stack status type for CloudFormation
+StackStatusType = Literal[
+    "CREATE_COMPLETE",
+    "UPDATE_COMPLETE",
+    "UPDATE_ROLLBACK_COMPLETE",
+    "IMPORT_COMPLETE",
+]
 
 
 def get_existing_forwarders(
@@ -27,12 +37,12 @@ def get_existing_forwarders(
     forwarders: dict[tuple[str, str], ExistingForwarder] = {}
 
     # Stack statuses that indicate a working forwarder
-    healthy_statuses = {
+    healthy_statuses: list[StackStatusType] = [
         "CREATE_COMPLETE",
         "UPDATE_COMPLETE",
         "UPDATE_ROLLBACK_COMPLETE",
         "IMPORT_COMPLETE",
-    }
+    ]
 
     try:
         cfn = session.client("cloudformation", region_name=region)
@@ -42,11 +52,11 @@ def get_existing_forwarders(
         while True:
             if next_token:
                 response = cfn.list_stacks(
-                    StackStatusFilter=list(healthy_statuses),
+                    StackStatusFilter=healthy_statuses,
                     NextToken=next_token,
                 )
             else:
-                response = cfn.list_stacks(StackStatusFilter=list(healthy_statuses))
+                response = cfn.list_stacks(StackStatusFilter=healthy_statuses)
 
             for stack_summary in response.get("StackSummaries", []):
                 stack_name = stack_summary.get("StackName", "")
@@ -93,15 +103,15 @@ def get_existing_forwarders(
                     forwarders[(bucket_arn, internal_log_type)] = forwarder
 
                 except ClientError as e:
-                    warn(f"Could not describe stack {stack_name}: {e}")
+                    warning(f"Could not describe stack {stack_name}: {e}")
 
             next_token = response.get("NextToken")
             if not next_token:
                 break
 
     except ClientError as e:
-        warn(f"Could not list CloudFormation stacks: {e}")
+        warning(f"Could not list CloudFormation stacks: {e}")
     except Exception as e:
-        warn(f"Error checking existing forwarders: {e}")
+        warning(f"Error checking existing forwarders: {e}")
 
     return forwarders

@@ -45,18 +45,31 @@ edot-cloudforwarder-onboarding-scripts/
 │       ├── __init__.py          # Package version
 │       ├── cli.py               # Main CLI entry point and user interaction
 │       └── discovery/           # AWS resource discovery modules
-│           ├── __init__.py      # Discovery coordinator (discover_all_sources)
+│           ├── coordinator.py   # Discovery coordinator (discover_all_sources)
 │           ├── types.py         # Data classes (LogSource, ExistingForwarder)
-│           ├── utils.py         # Shared utilities (CF commands, validation)
-│           ├── flow_logs.py     # VPC Flow Logs discovery
-│           ├── elb_logs.py      # ELB/ALB/NLB Access Logs discovery
-│           ├── cloudtrail.py    # CloudTrail trails discovery
-│           ├── waf_logs.py      # AWS WAF logs discovery
-│           └── forwarders.py    # Existing EDOT forwarder detection
+│           ├── utils/           # Shared utilities
+│           │   ├── bucket.py        # S3 bucket utilities
+│           │   ├── cloudformation.py# CF command generation
+│           │   ├── console.py       # Console output helpers
+│           │   ├── regions.py       # AWS region utilities
+│           │   └── validation.py    # Input validation
+│           ├── services/        # Service discovery modules
+│           │   ├── flow_logs.py     # VPC Flow Logs discovery
+│           │   ├── elb_logs.py      # ELB/ALB/NLB Access Logs discovery
+│           │   ├── cloudtrail.py    # CloudTrail trails discovery
+│           │   └── waf_logs.py      # AWS WAF logs discovery
+│           └── stacks/          # Stack management
+│               ├── commands.py      # Deployment command generation
+│               └── forwarders.py    # Existing forwarder detection
 ├── tests/
-│   ├── __init__.py
 │   ├── conftest.py              # Pytest fixtures
-│   └── test_cli.py              # CLI and utility tests
+│   └── discovery/               # Tests mirror src structure
+│       ├── utils/
+│       │   ├── test_bucket.py       # Bucket utility tests
+│       │   ├── test_cloudformation.py # CF command tests
+│       │   └── test_validation.py   # Validation tests
+│       └── stacks/
+│           └── test_commands.py     # Deployment command tests
 ├── install.sh                   # One-line installer for CloudShell
 ├── pyproject.toml               # Project configuration (dependencies, metadata)
 ├── README.md
@@ -75,10 +88,10 @@ uv run pytest
 uv run pytest --cov
 
 # Run specific test file
-uv run pytest tests/test_cli.py
+uv run pytest tests/discovery/utils/test_bucket.py
 
 # Run specific test
-uv run pytest tests/test_cli.py::TestExtractBucketArn::test_arn_format_with_prefix
+uv run pytest tests/discovery/utils/test_bucket.py::TestExtractBucketArn::test_extract_bucket_arn
 
 # Run with verbose output
 uv run pytest -v
@@ -100,7 +113,7 @@ uv run ruff format --check .
 uv run ruff format .
 
 # Type checking
-uv run mypy src
+uv run basedpyright src
 ```
 
 ## Pre-commit Checks
@@ -110,7 +123,7 @@ Before committing, run the full check suite:
 ```bash
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy src
+uv run basedpyright src
 uv run pytest
 ```
 
@@ -121,7 +134,7 @@ Or create a script:
 set -e
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy src
+uv run basedpyright src
 uv run pytest
 echo "All checks passed!"
 ```
@@ -159,13 +172,13 @@ For integration testing with real AWS resources:
 2. **Write tests first** (TDD recommended):
 
    ```python
-   # tests/test_cli.py
+   # tests/discovery/utils/test_*.py or tests/discovery/stacks/test_*.py
    def test_my_new_feature():
        result = my_new_function("input")
        assert result == "expected"
    ```
 
-3. **Implement the feature** in `src/edot_discovery/cli.py`
+3. **Implement the feature** in the appropriate module
 
 4. **Run tests and linting**:
 
@@ -216,7 +229,7 @@ def test_with_mock(mock_client):
 breakpoint()
 
 # Run pytest with -s to see output
-uv run pytest -s tests/test_cli.py::test_name
+uv run pytest -s tests/discovery/utils/test_bucket.py::test_name
 ```
 
 ## Release Process
@@ -234,5 +247,5 @@ uv run pytest -s tests/test_cli.py::test_name
 | `uv run pytest` | Run tests |
 | `uv run ruff check .` | Lint code |
 | `uv run ruff format .` | Format code |
-| `uv run mypy src` | Type check |
+| `uv run basedpyright src` | Type check |
 | `uv sync --dev` | Explicitly sync dev dependencies (for IDE support) |

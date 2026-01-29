@@ -3,8 +3,9 @@
 import boto3
 from botocore.exceptions import ClientError
 
-from .types import LogSource
-from .utils import extract_bucket_arn, warn
+from edot_discovery.discovery.types import LogSource
+from edot_discovery.discovery.utils.bucket import extract_bucket_arn
+from edot_discovery.discovery.utils.console import warning
 
 
 def discover_flow_logs(session: boto3.Session, region: str) -> list[LogSource]:
@@ -31,8 +32,8 @@ def discover_flow_logs(session: boto3.Session, region: str) -> list[LogSource]:
                         )
                     )
     except ClientError as e:
-        warn(f"Could not describe flow logs: {e}")
+        warning(f"Could not describe flow logs: {e}")
     except Exception as e:
-        warn(f"Error discovering flow logs: {e}")
+        warning(f"Error discovering flow logs: {e}")
 
     return sources

@@ -24,5 +24,6 @@ class LogSource:
     resource_id: str  # VPC/Subnet/ENI ID, LB ARN, Trail ARN, or Web ACL ARN
     destination: str  # Full S3 destination path
     bucket_arn: str  # S3 bucket ARN (without path)
-    region: str  # AWS region
+    region: str  # AWS region (of the resource, not necessarily the bucket)
     existing_forwarder: ExistingForwarder | None = field(default=None)
+    bucket_region: str | None = field(default=None)  # Actual bucket region, None if unknown

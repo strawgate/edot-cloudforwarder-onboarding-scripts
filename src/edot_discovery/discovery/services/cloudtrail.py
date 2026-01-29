@@ -3,8 +3,8 @@
 import boto3
 from botocore.exceptions import ClientError
 
-from .types import LogSource
-from .utils import warn
+from edot_discovery.discovery.types import LogSource
+from edot_discovery.discovery.utils.console import warning
 
 
 def discover_cloudtrail(session: boto3.Session, region: str) -> list[LogSource]:
@@ -60,8 +60,8 @@ def discover_cloudtrail(session: boto3.Session, region: str) -> list[LogSource]:
                 )
             )
     except ClientError as e:
-        warn(f"Could not describe CloudTrail trails: {e}")
+        warning(f"Could not describe CloudTrail trails: {e}")
     except Exception as e:
-        warn(f"Error discovering CloudTrail: {e}")
+        warning(f"Error discovering CloudTrail: {e}")
 
     return sources

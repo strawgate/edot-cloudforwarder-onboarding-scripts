@@ -3,8 +3,8 @@
 import boto3
 from botocore.exceptions import ClientError
 
-from .types import LogSource
-from .utils import warn
+from edot_discovery.discovery.types import LogSource
+from edot_discovery.discovery.utils.console import warning
 
 
 def discover_elb_logs(session: boto3.Session, region: str) -> list[LogSource]:
@@ -41,7 +41,7 @@ def _discover_elbv2_logs(session: boto3.Session, region: str) -> list[LogSource]
 
                         # Skip if bucket is empty
                         if not bucket:
-                            warn(
+                            warning(
                                 f"{lb['LoadBalancerName']} in {region} has access logging "
                                 "enabled but no S3 bucket configured, skipping"
                             )
@@ -63,11 +63,11 @@ def _discover_elbv2_logs(session: boto3.Session, region: str) -> list[LogSource]
                             )
                         )
                 except ClientError as e:
-                    warn(f"Could not get attributes for {lb['LoadBalancerName']}: {e}")
+                    warning(f"Could not get attributes for {lb['LoadBalancerName']}: {e}")
     except ClientError as e:
-        warn(f"Could not describe ALB/NLB: {e}")
+        warning(f"Could not describe ALB/NLB: {e}")
     except Exception as e:
-        warn(f"Error discovering ALB/NLB logs: {e}")
+        warning(f"Error discovering ALB/NLB logs: {e}")
 
     return sources
 
@@ -95,7 +95,7 @@ def _discover_classic_elb_logs(session: boto3.Session, region: str) -> list[LogS
 
                         # Skip if bucket is empty
                         if not bucket:
-                            warn(
+                            warning(
                                 f"Classic ELB {lb['LoadBalancerName']} in {region} has access "
                                 "logging enabled but no S3 bucket configured, skipping"
                             )
@@ -116,12 +116,14 @@ def _discover_classic_elb_logs(session: boto3.Session, region: str) -> list[LogS
                             )
                         )
                 except ClientError as e:
-                    warn(f"Could not get attributes for Classic ELB {lb['LoadBalancerName']}: {e}")
+                    warning(
+                        f"Could not get attributes for Classic ELB {lb['LoadBalancerName']}: {e}"
+                    )
     except ClientError as e:
         # Classic ELB API may not be available in all regions
         if "is not supported in this region" not in str(e):
-            warn(f"Could not describe Classic ELB: {e}")
+            warning(f"Could not describe Classic ELB: {e}")
     except Exception as e:
-        warn(f"Error discovering Classic ELB logs: {e}")
+        warning(f"Error discovering Classic ELB logs: {e}")
 
     return sources

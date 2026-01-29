@@ -26,22 +26,21 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from .discovery import LogSource, discover_all_sources
-from .discovery.utils import (
+from edot_discovery.discovery.coordinator import discover_all_sources
+from edot_discovery.discovery.stacks.commands import generate_deployment_commands
+from edot_discovery.discovery.types import LogSource
+from edot_discovery.discovery.utils.bucket import get_bucket_region
+from edot_discovery.discovery.utils.cloudformation import redact_command_for_display
+from edot_discovery.discovery.utils.console import (
     bold,
     cancel,
     dim,
     error,
-    generate_cloudformation_command,
-    generate_stack_name,
-    get_bucket_region,
-    get_default_region,
-    get_enabled_regions,
-    redact_command_for_display,
     success,
-    validate_otlp_endpoint,
     warning,
 )
+from edot_discovery.discovery.utils.regions import get_default_region, get_enabled_regions
+from edot_discovery.discovery.utils.validation import validate_otlp_endpoint
 
 # Initialize rich console
 console = Console()
@@ -94,12 +93,15 @@ def _build_choice_label(source: LogSource) -> str:
         # Show that it's already configured with the stack name
         stack_name = source.existing_forwarder.stack_name
         label = f"{source.source_id} -> {source.bucket_arn} [CONFIGURED: {stack_name}]"
+    elif source.bucket_region is None:
+        # Show that bucket region is unknown
+        label = f"{source.source_id} ({source.display_type}) -> {source.bucket_arn} [UNKNOWN]"
     else:
         label = f"{source.source_id} ({source.display_type}) -> {source.bucket_arn}"
 
     # Truncate long labels
-    if len(label) > 90:
-        label = label[:87] + "..."
+    if len(label) > 100:
+        label = label[:97] + "..."
     return label
 
 
@@ -123,111 +125,11 @@ def build_selection_choices(sources: list[LogSource]) -> list[Choice | Separator
         choices.append(Separator(separator_label))
         for source in group_sources:
             label = _build_choice_label(source)
-            # Sources with existing forwarders are unchecked by default
-            is_checked = source.existing_forwarder is None
+            # Uncheck sources that already have forwarders or have unknown bucket regions
+            is_checked = source.existing_forwarder is None and source.bucket_region is not None
             choices.append(Choice(title=label, value=source, checked=is_checked))
 
     return choices
-
-
-def generate_deployment_commands(
-    selected_sources: list[LogSource],
-    otlp_endpoint: str,
-    api_key: str,
-    session: boto3.Session | None = None,
-) -> list[tuple[str, str, str, str, list[str]]]:
-    """
-    Generate CloudFormation deployment commands for selected sources.
-
-    Args:
-        selected_sources: List of LogSource objects to generate commands for
-        otlp_endpoint: OTLP endpoint URL for Elastic Cloud
-        api_key: Elastic API key
-        session: Optional boto3 Session. If not provided, creates a new session.
-
-    Returns:
-        List of tuples: (display_name, bucket_arn, bucket_region, log_type, command_list)
-
-    Note: One stack per unique bucket+log_type combination.
-    Uses the bucket's actual region (not the resource region) for deployment.
-    """
-    if session is None:
-        session = boto3.Session()
-
-    commands: list[tuple[str, str, str, str, list[str]]] = []
-
-    # Group sources by (bucket_arn, log_type) - we'll determine bucket region separately
-    buckets_by_type: dict[tuple[str, str], list[LogSource]] = {}
-    for source in selected_sources:
-        key = (source.bucket_arn, source.log_type)
-        if key not in buckets_by_type:
-            buckets_by_type[key] = []
-        buckets_by_type[key].append(source)
-
-    # Generate one command per unique bucket+type, using bucket's actual region
-    for (bucket_arn, log_type), sources in buckets_by_type.items():
-        # Get the bucket's actual region
-        bucket_region = get_bucket_region(bucket_arn, session)
-
-        if bucket_region is None:
-            # Fallback to first source's region if we can't determine bucket region
-            bucket_region = sources[0].region
-            console.print()
-            console.print(
-                Panel(
-                    f"Could not determine region for bucket:\n"
-                    f"  {bucket_arn}\n\n"
-                    f"Falling back to resource region: [bold]{bucket_region}[/bold]\n\n"
-                    f"This may cause deployment issues if the bucket is actually\n"
-                    f"in a different region.",
-                    title="[yellow]Warning: Unknown Bucket Region[/yellow]",
-                    border_style="yellow",
-                )
-            )
-        else:
-            # Check if any sources have a different region than the bucket
-            # This is valid - services can write cross-region, but notifications require same-region
-            resource_regions = {s.region for s in sources}
-            if bucket_region not in resource_regions:
-                console.print()
-                console.print(
-                    Panel(
-                        f"Bucket: {bucket_arn}\n"
-                        f"  Bucket region: [bold]{bucket_region}[/bold]\n"
-                        f"  Resource region(s): [bold]{', '.join(resource_regions)}[/bold]\n\n"
-                        f"This is valid - AWS services can write logs cross-region.\n"
-                        f"The stack will be deployed in [bold]{bucket_region}[/bold]\n"
-                        f"(required for S3 event notifications).",
-                        title="[cyan]Note: Cross-Region Configuration[/cyan]",
-                        border_style="cyan",
-                    )
-                )
-
-        # Generate deterministic stack name
-        stack_name = generate_stack_name(bucket_arn, log_type)
-
-        # Set display name based on log type
-        if log_type == "vpc_flow_logs":
-            display_name = "VPC Flow Logs"
-        elif log_type == "cloudtrail":
-            display_name = "CloudTrail"
-        elif log_type == "waf":
-            display_name = "AWS WAF"
-        else:
-            display_name = "ELB Access Logs"
-
-        cmd = generate_cloudformation_command(
-            stack_name=stack_name,
-            log_type=log_type,
-            bucket_arn=bucket_arn,
-            otlp_endpoint=otlp_endpoint,
-            api_key=api_key,
-            region=bucket_region,
-        )
-
-        commands.append((display_name, bucket_arn, bucket_region, log_type, cmd))
-
-    return commands
 
 
 def execute_deployment(command: list[str]) -> tuple[bool, str]:
@@ -336,6 +238,30 @@ def main() -> None:
         )
         sys.exit(0)
 
+    # Look up bucket regions for all unique buckets
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        progress.add_task("Looking up bucket regions...", total=None)
+        unique_buckets = {s.bucket_arn for s in sources}
+        bucket_regions: dict[str, str | None] = {}
+        for bucket_arn in unique_buckets:
+            bucket_regions[bucket_arn] = get_bucket_region(bucket_arn)
+
+        # Annotate sources with bucket region
+        for source in sources:
+            source.bucket_region = bucket_regions.get(source.bucket_arn)
+
+    # Count buckets with unknown regions
+    unknown_count = sum(1 for r in bucket_regions.values() if r is None)
+    if unknown_count > 0:
+        warning(f"{unknown_count} bucket(s) have unknown regions (may not exist or access denied)")
+        dim("Sources with unknown bucket regions are unselected by default.")
+        console.print()
+
     # Display discovered sources
     display_results_table(sources)
     console.print()
@@ -434,8 +360,8 @@ def main() -> None:
 
     for i, (display_name, bucket_arn, bucket_region, _log_type, cmd) in enumerate(commands, 1):
         # Format as bash comments so output can be copied and run as a script
-        console.print(f"[bold cyan]# Stack {i}: {display_name}[/bold cyan]")
-        console.print(f"[green]# Bucket: {bucket_arn} ({bucket_region})[/green]")
+        console.print(f"[bold cyan]# Stack {i} ({bucket_region}): {display_name}[/bold cyan]")
+        console.print(f"[green]# Bucket: {bucket_arn}[/green]")
         # Display redacted command
         redacted_cmd = redact_command_for_display(cmd)
         console.print(redacted_cmd)
