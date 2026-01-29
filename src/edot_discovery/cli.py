@@ -130,8 +130,7 @@ def _build_choice_label(source: LogSource) -> str:
         # Show that it's already configured
         host = _extract_host_from_endpoint(source.existing_forwarder.otlp_endpoint)
         label = (
-            f"{warning_prefix}s3://{bucket_name}  │  {source.source_id}  │  "
-            f"✓ Configured → {host}"
+            f"{warning_prefix}s3://{bucket_name}  │  {source.source_id}  │  ✓ Configured → {host}"
         )
     else:
         # Just bucket and source ID (type is already in section header)
@@ -143,9 +142,7 @@ def _build_choice_label(source: LogSource) -> str:
         if len(bucket_name) > 40:
             truncated_bucket = bucket_name[:37] + "..."
             if source.existing_forwarder:
-                host = _extract_host_from_endpoint(
-                    source.existing_forwarder.otlp_endpoint
-                )
+                host = _extract_host_from_endpoint(source.existing_forwarder.otlp_endpoint)
                 label = (
                     f"{warning_prefix}s3://{truncated_bucket}  │  {source.source_id}  │  "
                     f"✓ Configured → {host}"
@@ -379,7 +376,8 @@ def main() -> None:
     console.print(
         Panel(
             "Enter your Elastic Cloud OTLP endpoint and API key.\n"
-            "Find these in Kibana: Management -> Fleet -> Agent Policies -> OTLP Endpoint",
+            "Find these in Kibana: Add Data -> Application -> OpenTelemetry -> "
+            "OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_HEADERS (everything after ApiKey)",
             title="Elastic Cloud Configuration",
             border_style="cyan",
         )
@@ -403,6 +401,11 @@ def main() -> None:
     if not api_key:
         cancel("Operation cancelled.")
         sys.exit(0)
+
+    # Strip "Authorization=ApiKey " prefix if present (user might paste full header value)
+    if api_key.startswith("Authorization=ApiKey "):
+        api_key = api_key[len("Authorization=ApiKey ") :]
+        dim("Stripped 'Authorization=ApiKey ' prefix from API key")
 
     console.print()
 
