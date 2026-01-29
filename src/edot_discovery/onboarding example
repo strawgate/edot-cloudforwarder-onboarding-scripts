@@ -1,0 +1,46 @@
+~ $ curl -fsSL http://ela.st/onboard-ecf-aws | bash
+
+==========================================
+ EDOT Cloud Forwarder Discovery Tool
+==========================================
+
+[INFO] uv is already installed
+[INFO] Updating existing installation...
+[INFO] Starting EDOT Discovery Tool...
+
+╭────────────────────────────────────────────╮
+│ EDOT Cloud Forwarder                       │
+│ AWS Log Source Discovery & Onboarding Tool │
+╰────────────────────────────────────────────╯
+
+AWS Account: 627286350134
+Caller ARN: arn:aws:sts::627286350134:assumed-role/okta-dev/bill.easton@elastic.co
+? Select AWS region to scan: us-east-1 (current)
+
+Scanning region us-east-1 for log sources...
+
+1 bucket(s) have unknown regions (may not exist or access denied)
+
+                                            Discovered 4 Log Source(s)                                             
+╭───────────────────────────┬────────────────────────────────┬───────────────────────────────────┬────────────────╮
+│ Type                      │ ID                             │ S3 Destination                    │ Status         │
+├───────────────────────────┼────────────────────────────────┼───────────────────────────────────┼────────────────┤
+│ VPC Flow Logs             │ fl-0fcfcddc4f2df7439           │ arn:aws:s3:::tommyers-vpcflowlogs │ Not configured │
+├───────────────────────────┼────────────────────────────────┼───────────────────────────────────┼────────────────┤
+│ VPC Flow Logs             │ fl-055952aa8bb3d088a           │ arn:aws:s3:::vignesh-ecf-testing  │ Not configured │
+├───────────────────────────┼────────────────────────────────┼───────────────────────────────────┼────────────────┤
+│ APPLICATION Access Logs   │ michail-katsoulis-ecf-huge-alb │ s3://michail-katsoulis-ecf-huge   │ Not configured │
+├───────────────────────────┼────────────────────────────────┼───────────────────────────────────┼────────────────┤
+│ CloudTrail (Multi-Region) │ KavinduTesting                 │ s3://kavindu-s3-testing           │ Not configured │
+╰───────────────────────────┴────────────────────────────────┴───────────────────────────────────┴────────────────╯
+
+All sources are pre-selected. Sources with unknown bucket regions are unselected by default. Use arrow keys to navigate, Space to toggle, Enter to confirm.
+? Select log sources to onboard: (Use arrow keys to move, <space> to select, <a> to toggle, <i> to invert)
+   VPC Flow Logs
+ » ○ fl-0fcfcddc4f2df7439  │  VPC Flow Logs  │  s3://tommyers-vpcflowlogs  │  ⚠ Unknown bucket region
+   ● fl-055952aa8bb3d088a  │  VPC Flow Logs  │  s3://vignesh-ecf-testing
+   ELB Access Logs
+   ● michail-katsoulis-ecf-huge-alb  │  APPLICATION Access Logs  │  s3://michail-katsoulis-ecf-huge
+   CloudTrail
+   ● KavinduTesting  │  CloudTrail (Multi-Region)  │  s3://kavindu-s3-testing
+ 

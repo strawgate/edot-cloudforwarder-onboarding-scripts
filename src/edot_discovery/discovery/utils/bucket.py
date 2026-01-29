@@ -52,9 +52,9 @@ def get_bucket_region(bucket_arn: str, session: boto3.Session | None = None) -> 
         if location is None:
             return "us-east-1"
         return location
-    except ClientError as e:
-        warning(f"Could not determine region for bucket {bucket_arn}: {e}")
+    except ClientError:
+        # Silently return None - we'll show a summary warning later
         return None
-    except Exception as e:
-        warning(f"Error getting bucket region for {bucket_arn}: {e}")
+    except Exception:
+        # Silently return None - we'll show a summary warning later
         return None

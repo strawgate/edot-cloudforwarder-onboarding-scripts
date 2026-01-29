@@ -63,9 +63,12 @@ def display_results_table(sources: list[LogSource]) -> None:
     table.add_column("Type", style="cyan", no_wrap=True)
     table.add_column("ID", style="magenta")
     table.add_column("S3 Destination", style="green", max_width=40, overflow="ellipsis")
-    table.add_column("Status", max_width=35, overflow="ellipsis")
+    table.add_column("Forwarder Status", max_width=35, overflow="ellipsis")
 
     for source in sources:
+        # Check if there's a warning (unknown bucket region)
+        has_warning = source.bucket_region is None
+
         if source.existing_forwarder:
             # Extract host from OTLP endpoint for brevity
             endpoint = source.existing_forwarder.otlp_endpoint
@@ -77,31 +80,82 @@ def display_results_table(sources: list[LogSource]) -> None:
         else:
             status = "[dim]Not configured[/dim]"
 
+        # Add warning icon to type column if there's a warning
+        type_display = source.display_type
+        if has_warning:
+            type_display = f"⚠ {type_display}"
+
+        # Format S3 destination with warning text on second line if needed
+        destination_display = source.destination
+        if has_warning:
+            destination_display = (
+                f"{source.destination}\n[dim](may not exist or access denied)[/dim]"
+            )
+
+        # Style the row based on warning status
+        row_style = "yellow" if has_warning else None
+
         table.add_row(
-            source.display_type,
+            type_display,
             source.source_id,
-            source.destination,
+            destination_display,
             status,
+            style=row_style,
         )
 
     console.print(table)
 
 
+def _extract_bucket_name(bucket_arn: str) -> str:
+    """Extract bucket name from ARN."""
+    return bucket_arn.replace("arn:aws:s3:::", "")
+
+
+def _extract_host_from_endpoint(endpoint: str) -> str:
+    """Extract host from OTLP endpoint for brevity."""
+    try:
+        return urlparse(endpoint).netloc or endpoint
+    except Exception:
+        return endpoint
+
+
 def _build_choice_label(source: LogSource) -> str:
     """Build a display label for a source in the selection UI."""
-    if source.existing_forwarder:
-        # Show that it's already configured with the stack name
-        stack_name = source.existing_forwarder.stack_name
-        label = f"{source.source_id} -> {source.bucket_arn} [CONFIGURED: {stack_name}]"
-    elif source.bucket_region is None:
-        # Show that bucket region is unknown
-        label = f"{source.source_id} ({source.display_type}) -> {source.bucket_arn} [UNKNOWN]"
-    else:
-        label = f"{source.source_id} ({source.display_type}) -> {source.bucket_arn}"
+    bucket_name = _extract_bucket_name(source.bucket_arn)
 
-    # Truncate long labels
-    if len(label) > 100:
-        label = label[:97] + "..."
+    # Start with warning symbol if bucket region is unknown
+    warning_prefix = "⚠ " if source.bucket_region is None else ""
+
+    if source.existing_forwarder:
+        # Show that it's already configured
+        host = _extract_host_from_endpoint(source.existing_forwarder.otlp_endpoint)
+        label = (
+            f"{warning_prefix}s3://{bucket_name}  │  {source.source_id}  │  "
+            f"✓ Configured → {host}"
+        )
+    else:
+        # Just bucket and source ID (type is already in section header)
+        label = f"{warning_prefix}s3://{bucket_name}  │  {source.source_id}"
+
+    # Truncate long labels if needed
+    if len(label) > 120:
+        # Truncate bucket name if needed
+        if len(bucket_name) > 40:
+            truncated_bucket = bucket_name[:37] + "..."
+            if source.existing_forwarder:
+                host = _extract_host_from_endpoint(
+                    source.existing_forwarder.otlp_endpoint
+                )
+                label = (
+                    f"{warning_prefix}s3://{truncated_bucket}  │  {source.source_id}  │  "
+                    f"✓ Configured → {host}"
+                )
+            else:
+                label = f"{warning_prefix}s3://{truncated_bucket}  │  {source.source_id}"
+        # If still too long, truncate the whole thing
+        if len(label) > 120:
+            label = label[:117] + "..."
+
     return label
 
 
@@ -111,18 +165,24 @@ def build_selection_choices(sources: list[LogSource]) -> list[Choice | Separator
 
     # Configuration for each log type group
     log_type_groups = [
-        ("vpc_flow_logs", "--- VPC Flow Logs ---"),
-        ("elb_access_logs", "--- ELB Access Logs ---"),
-        ("cloudtrail", "--- CloudTrail ---"),
-        ("waf", "--- AWS WAF ---"),
+        ("vpc_flow_logs", "VPC Flow Logs"),
+        ("elb_access_logs", "ELB Access Logs"),
+        ("cloudtrail", "CloudTrail"),
+        ("waf", "AWS WAF"),
     ]
 
+    first_group = True
     for log_type, separator_label in log_type_groups:
         group_sources = [s for s in sources if s.log_type == log_type]
         if not group_sources:
             continue
 
+        # Add newline before section header (except for first group)
+        if not first_group:
+            separator_label = f"\n{separator_label}"
+
         choices.append(Separator(separator_label))
+        first_group = False
         for source in group_sources:
             label = _build_choice_label(source)
             # Uncheck sources that already have forwarders or have unknown bucket regions
@@ -257,9 +317,9 @@ def main() -> None:
 
     # Count buckets with unknown regions
     unknown_count = sum(1 for r in bucket_regions.values() if r is None)
-    if unknown_count > 0:
+    has_unknown_buckets = unknown_count > 0
+    if has_unknown_buckets:
         warning(f"{unknown_count} bucket(s) have unknown regions (may not exist or access denied)")
-        dim("Sources with unknown bucket regions are unselected by default.")
         console.print()
 
     # Display discovered sources
@@ -271,10 +331,24 @@ def main() -> None:
 
     # Count already-configured sources for messaging
     already_configured = sum(1 for s in sources if s.existing_forwarder)
-    if already_configured > 0:
+
+    if already_configured > 0 and has_unknown_buckets:
         dim(
             f"Sources not yet configured are pre-selected. "
-            f"{already_configured} source(s) already have forwarders (marked [CONFIGURED])."
+            f"{already_configured} source(s) already have forwarders (marked [CONFIGURED]). "
+            f"Sources with unknown bucket regions are unselected by default. "
+            f"Use arrow keys to navigate, Space to toggle, Enter to confirm."
+        )
+    elif already_configured > 0:
+        dim(
+            f"Sources not yet configured are pre-selected. "
+            f"{already_configured} source(s) already have forwarders (marked [CONFIGURED]). "
+            f"Use arrow keys to navigate, Space to toggle, Enter to confirm."
+        )
+    elif has_unknown_buckets:
+        dim(
+            "All sources are pre-selected. Sources with unknown bucket regions are "
+            "unselected by default. Use arrow keys to navigate, Space to toggle, Enter to confirm."
         )
     else:
         dim(
