@@ -101,11 +101,14 @@ run_discovery() {
     info "Starting EDOT Discovery Tool..."
     echo ""
     
-    # Reconnect stdin to terminal for interactive prompts (needed for curl | bash)
-    exec </dev/tty
+    # Run in subshell with stdin redirected
+    (exec 0</dev/tty; uv run edot-discover)
+    local exit_code=$?
     
-    # uv run automatically installs dependencies from pyproject.toml
-    uv run edot-discover
+    # Reset terminal state (important for CloudShell)
+    stty sane 2>/dev/null || true
+    
+    return $exit_code
 }
 
 main() {
@@ -119,6 +122,9 @@ main() {
     setup_uv
     setup_repo
     run_discovery
+    
+    # Explicitly exit to ensure clean termination
+    exit $?
 }
 
 main "$@"

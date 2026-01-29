@@ -171,18 +171,15 @@ def build_selection_choices(sources: list[LogSource]) -> list[Choice | Separator
         ("waf", "AWS WAF"),
     ]
 
-    first_group = True
     for log_type, separator_label in log_type_groups:
         group_sources = [s for s in sources if s.log_type == log_type]
         if not group_sources:
             continue
 
-        # Add newline before section header (except for first group)
-        if not first_group:
-            separator_label = f"\n{separator_label}"
+        # Add newline before section header
+        separator_label = f"\n{separator_label}"
 
         choices.append(Separator(separator_label))
-        first_group = False
         for source in group_sources:
             label = _build_choice_label(source)
             # Uncheck sources that already have forwarders or have unknown bucket regions
@@ -315,16 +312,12 @@ def main() -> None:
         for source in sources:
             source.bucket_region = bucket_regions.get(source.bucket_arn)
 
-    # Count buckets with unknown regions
+    # Count buckets with unknown regions (for selection message)
     unknown_count = sum(1 for r in bucket_regions.values() if r is None)
     has_unknown_buckets = unknown_count > 0
-    if has_unknown_buckets:
-        warning(f"{unknown_count} bucket(s) have unknown regions (may not exist or access denied)")
-        console.print()
 
     # Display discovered sources
     display_results_table(sources)
-    console.print()
 
     # Build selection choices
     choices = build_selection_choices(sources)
@@ -334,27 +327,24 @@ def main() -> None:
 
     if already_configured > 0 and has_unknown_buckets:
         dim(
-            f"Sources not yet configured are pre-selected. "
-            f"{already_configured} source(s) already have forwarders (marked [CONFIGURED]). "
-            f"Sources with unknown bucket regions are unselected by default. "
-            f"Use arrow keys to navigate, Space to toggle, Enter to confirm."
+            f"Pre-selected for deployment: Sources without warnings or errors. "
+            f"{already_configured} source(s) already have forwarders (marked [CONFIGURED]) "
+            f"and are excluded."
         )
     elif already_configured > 0:
         dim(
-            f"Sources not yet configured are pre-selected. "
-            f"{already_configured} source(s) already have forwarders (marked [CONFIGURED]). "
-            f"Use arrow keys to navigate, Space to toggle, Enter to confirm."
+            f"Pre-selected for deployment: Sources without warnings or errors. "
+            f"{already_configured} source(s) already have forwarders (marked [CONFIGURED]) "
+            f"and are excluded."
         )
     elif has_unknown_buckets:
-        dim(
-            "All sources are pre-selected. Sources with unknown bucket regions are "
-            "unselected by default. Use arrow keys to navigate, Space to toggle, Enter to confirm."
-        )
+        dim("Pre-selected for deployment: Sources without warnings or errors.")
     else:
-        dim(
-            "All sources are pre-selected. Use arrow keys to navigate, "
-            "Space to toggle, Enter to confirm."
-        )
+        dim("Pre-selected for deployment: All sources.")
+
+    # Add explanation about what the icons mean
+    dim("● = Will be deployed  |  ○ = Will not be deployed")
+    console.print()
 
     selected: list[LogSource] = questionary.checkbox(
         "Select log sources to onboard:",
